@@ -241,15 +241,125 @@ bool validateExecutable() {
 }
 
 /**
- * Load in the list of jump thunks that act as stubs for calling methods in dynamic segments
+ * Loads the list of dynamic segments from the executable
  */
-bool loadJumpList() {
+bool loadSegmentList() {
+	byte buffer[LARGE_BUFFER_SIZE];
+	int dataIndex = 0;
+
 	exeNameOffset = scanExecutable((const byte *)exeFilename, strlen(exeFilename));
 	if (exeNameOffset == -1) {
 		printf("Could not find the executable's own filename within the file\n");
 		return false;
 	}
 
+	int bufferStart = exeNameOffset - LARGE_BUFFER_SIZE;
+	fExe.seek(bufferStart);
+	fExe.read(buffer, LARGE_BUFFER_SIZE);
+
+	// The segment list is a set of entries 18 bytes, bytes 14 & 15 of which are the segment number,
+	// which should be in incrementing values. As such, we need to scan backwards through the loaded
+	// buffer until we find decrementing values two bytes wide at intervals of 18 bytes aparat
+	int offset;
+	bool exeFilenameIsFirst = true;
+	for (offset = LARGE_BUFFER_SIZE - 4; offset >= 18 * 5; --offset) {
+		uint num5 = READ_LE_UINT16(buffer + offset);
+		uint num4 = READ_LE_UINT16(buffer + offset - 18);
+		uint num3 = READ_LE_UINT16(buffer + offset - 18 * 2);
+		uint num2 = READ_LE_UINT16(buffer + offset - 18 * 3);
+		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
+		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
+			// Bonza! We've found the the last entry of the list
+			segmentList.resize(num5 + 1);
+			break;
+		}
+
+		// Check to see if the OVL version of the filename appears between the end of the segment
+		// list and the EXE filename. This is needed to figure out which file each segment is using
+		if (!strncmp((const char *)buffer + offset, ovlFilename, strlen(ovlFilename)))
+			exeFilenameIsFirst = false;
+	}
+	if (offset < (18 * 5)) {
+		printf("Could not find RTLink segment list\n");
+		return false;
+	}
+
+	// Move backwards through the segment list, loading the entries
+	uint lowestFilenameOffset = 0xffff;
+	offset -= 14;
+	for (int segmentNum = (int)segmentList.size() - 1; segmentNum >= 1; --segmentNum, offset -= 18) {
+		SegmentEntry &seg = segmentList[segmentNum];
+		byte *p = buffer + offset;
+
+		// If set, it does some extra indexing that I haven't looked into
+		assert(!(p[7] & 8));
+
+		if (READ_LE_UINT16(buffer + offset + 14) != segmentNum)
+			break;
+
+		// Get data for the entry
+		seg.segmentIndex = segmentNum;
+		seg.offset = bufferStart + offset;
+		seg.filenameOffset = READ_LE_UINT16(p + 2);
+		seg.headerOffset = (READ_LE_UINT32(p + 4) & 0xffffff) << 4;
+		seg.relocations.resize(READ_LE_UINT16(p + 10));
+		seg.codeOffset = seg.headerOffset + (((seg.relocations.size() + 3) >> 2) << 4);
+		seg.codeSize = READ_LE_UINT16(p + 16) << 4;
+
+		// Keep track of the highest filename offset. This will be needed to figure 
+		// out which filename to use
+		if (seg.filenameOffset < lowestFilenameOffset)
+			lowestFilenameOffset = seg.filenameOffset;
+	}
+
+	// Iterate through the list to set whether each segment is using the executable or OVL,
+	// and to load the relocation entries from the start of that segment's data
+	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
+		SegmentEntry &seg = segmentList[segmentNum];
+		if (!seg.headerOffset)
+			continue;
+
+		// Set executable flag
+		seg.isExecutable = exeFilenameIsFirst == (seg.filenameOffset == lowestFilenameOffset);
+
+		// Get a reference to the correct file, and move to the start of the segment
+		File &file = seg.isExecutable ? fExe : fOvl;
+		file.seek(seg.headerOffset);
+
+		// Read the segment header information
+		uint16 codeParagraphOffset = fExe.readWord();
+		fExe.readWord();
+		uint16 relocationStart = fExe.readWord();
+		uint16 numRelocations = fExe.readWord();
+		assert(relocationStart == 0);
+
+		// Get the list of relocations
+		fExe.seek(6 + relocationStart * 4, SEEK_CUR);
+		for (int relCtr = 0; relCtr < numRelocations; ++relCtr, ++extraRelocations) {
+			uint16 offsetVal = fExe.readWord();
+			uint16 segmentVal = fExe.readWord();
+			assert((offsetVal != 0) || (segmentVal != 0));
+			assert((uint32)(segmentVal * 16 + offsetVal) <= seg.codeSize);
+
+			uint32 v = (segmentVal << 16) + offsetVal;
+			seg.relocations.push_back(v);
+		}
+
+		// Process the relocation list to add the relative segment start of this segment's code
+		for (uint i = 0; i < seg.relocations.size(); ++i) {
+			seg.relocations[i] += ((seg.codeOffset - codeOffset) >> 4) << 16;
+		}
+		Common::sort(seg.relocations.begin(), seg.relocations.end());
+	}
+
+	return true;
+}
+
+
+/**
+ * Load in the list of jump thunks that act as stubs for calling methods in dynamic segments
+ */
+bool loadJumpList() {
 	byte byteVal;
 	while ((byteVal = fExe.readByte()) != 0xE8) {
 		if (byteVal > 0 && byteVal < 32) {
@@ -283,7 +393,7 @@ bool loadJumpList() {
 		rec.offset = fileOffset;
 		rec.altFlag = false;
 		rec.segmentIndex = fExe.readWord();
-		jumpList.push_back(JumpEntryList::value_type(rec));
+		jumpList.push_back(rec);
 
 		byteVal = fExe.readByte();
 
@@ -296,97 +406,9 @@ bool loadJumpList() {
 			}
 
 			relocations.push_back((aliasSegment << 16) + (fileOffset + 3 - (aliasSegment << 4)));
-			printf("Added entry for file offset %xh", fileOffset + 3, 
+			printf("Added entry for file offset %xh", fileOffset + 3,
 				relocations[relocations.size() - 1]);
 		}
-	}
-
-	return true;
-}
-
-// loadSegmentList
-// Loads the list of dynamic segments from the executable
-
-bool loadSegmentList() {
-	byte buffer[BUFFER_SIZE];
-	int dataIndex = 0;
-
-	int bufferStart = exeNameOffset - BUFFER_SIZE;
-	fExe.seek(bufferStart);
-	fExe.read(buffer, BUFFER_SIZE);
-
-	// The segment list is a set of entries 18 bytes, bytes 14 & 15 of which are the segment number,
-	// which should be in incrementing values. As such, we need to scan backwards through the loaded
-	// buffer until we find decrementing values two bytes wide at intervals of 18 bytes aparat
-	int offset;
-	for (offset = BUFFER_SIZE - 4; offset >= 18 * 5; --offset) {
-		uint num5 = READ_LE_UINT16(buffer + offset);
-		uint num4 = READ_LE_UINT16(buffer + offset - 18);
-		uint num3 = READ_LE_UINT16(buffer + offset - 18 * 2);
-		uint num2 = READ_LE_UINT16(buffer + offset - 18 * 3);
-		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
-		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
-			// Bonza! We've found the the last entry of the list
-			segmentList.resize(num5 + 1);
-			break;
-		}
-	}
-	if (offset < (18 * 5)) {
-		printf("Could not find RTLink segment list\n");
-		return false;
-	}
-
-	// Move backwards through the segment list, loading the entries
-	offset -= 14;
-	for (int segmentNum = segmentList.size() - 1; segmentNum >= 1; --segmentNum, offset -= 18) {
-		SegmentEntry &seg = segmentList[segmentNum];
-		if (READ_LE_UINT16(buffer + offset + 14) != segmentNum)
-			break;
-
-		seg.segmentIndex = segmentNum;
-		seg.offset = bufferStart + offset;
-		seg.headerOffset = READ_LE_UINT32(buffer + offset + 8);
-		
-		seg.codeOffset = 0;
-		seg.codeSize = 1;
-	}
-
-	// Rescan through the list of segments to calculate the code offsets and relocation entries
-
-
-
-	extraRelocations = 0;
-	for (uint segmentCtr = 0; segmentCtr < segmentList.size(); ++segmentCtr) {
-		SegmentEntry *rec = &segmentList[segmentCtr];
-
-		// Move to the specified offset and read the segment header information
-		fExe.seek(rec->headerOffset + 2);
-		uint16 codeParagraphOffset = fExe.readWord();
-		fExe.readWord();
-		uint16 relocationStart = fExe.readWord();
-		uint16 numRelocations = fExe.readWord();
-		assert(relocationStart == 0);
-
-		// Set the code offset
-		rec->codeOffset = rec->headerOffset + (codeParagraphOffset << 4);
-
-		// Get the list of relocations
-		fExe.seek(6 + relocationStart * 4, SEEK_CUR);
-		for (int relCtr = 0; relCtr < numRelocations; ++relCtr, ++extraRelocations) {
-			uint16 offsetVal = fExe.readWord();
-			uint16 segmentVal = fExe.readWord();
-			assert((offsetVal != 0) || (segmentVal != 0));
-			assert((uint32)(segmentVal * 16 + offsetVal) <= rec->codeSize);
-
-			uint32 v = (segmentVal << 16) + offsetVal;
-			rec->relocations.push_back(v);
-		}
-
-		// Process the relocation list to add the relative segment start of this segment's code
-		for (uint i = 0; i < rec->relocations.size(); ++i) {
-			rec->relocations[i] += ((rec->codeOffset - codeOffset) >> 4) << 16;
-		}
-		Common::sort(rec->relocations.begin(), rec->relocations.end());
 	}
 
 	return true;
@@ -611,11 +633,11 @@ int main(int argc, char *argv[]) {
 	if (!validateExecutable())
 		close();
 
-	if (!loadJumpList()) {
+	if (!loadSegmentList()) {
 		close();
 	}
 
-	if (!loadSegmentList()) {
+	if (!loadJumpList()) {
 		close();
 	}
 

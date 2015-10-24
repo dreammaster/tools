@@ -53,11 +53,18 @@ struct JumpEntry {
 class SegmentEntry {
 public:
 	uint32 offset;
-	int segmentIndex;
+	uint segmentIndex;
+	uint filenameOffset;
+
 	uint32 headerOffset;
 	uint32 codeOffset;
 	uint32 codeSize;
+	byte flags;
+	bool isExecutable;
 	Common::Array<uint32> relocations;
+
+	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
+		codeOffset(0), codeSize(0), flags(0), isExecutable(false) {}
 };
 
 class File {
@@ -126,5 +133,6 @@ public:
 
 #define MAX_FILENAME_SIZE 1024
 #define BUFFER_SIZE 1024
+#define LARGE_BUFFER_SIZE 0x1000
 
 #endif
