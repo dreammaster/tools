@@ -55,6 +55,7 @@ public:
 	uint32 offset;
 	uint segmentIndex;
 	uint filenameOffset;
+	uint loadSegment;
 
 	uint32 headerOffset;
 	uint32 codeOffset;

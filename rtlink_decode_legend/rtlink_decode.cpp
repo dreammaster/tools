@@ -270,7 +270,7 @@ bool loadSegmentList() {
 		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
 		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
 			// Bonza! We've found the the last entry of the list
-			segmentList.resize(num5 + 1);
+			segmentList.resize(num5);
 			break;
 		}
 
@@ -287,8 +287,8 @@ bool loadSegmentList() {
 	// Move backwards through the segment list, loading the entries
 	uint lowestFilenameOffset = 0xffff;
 	offset -= 14;
-	for (int segmentNum = (int)segmentList.size() - 1; segmentNum >= 1; --segmentNum, offset -= 18) {
-		SegmentEntry &seg = segmentList[segmentNum];
+	for (int segmentNum = (int)segmentList.size(); segmentNum > 0; --segmentNum, offset -= 18) {
+		SegmentEntry &seg = segmentList[segmentNum - 1];
 		byte *p = buffer + offset;
 
 		// If set, it does some extra indexing that I haven't looked into
@@ -300,6 +300,7 @@ bool loadSegmentList() {
 		// Get data for the entry
 		seg.segmentIndex = segmentNum;
 		seg.offset = bufferStart + offset;
+		seg.loadSegment = READ_LE_UINT16(p);
 		seg.filenameOffset = READ_LE_UINT16(p + 2);
 		seg.headerOffset = (READ_LE_UINT32(p + 4) & 0xffffff) << 4;
 		seg.relocations.resize(READ_LE_UINT16(p + 10));
@@ -316,7 +317,7 @@ bool loadSegmentList() {
 	// and to load the relocation entries from the start of that segment's data
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &seg = segmentList[segmentNum];
-		if (!seg.headerOffset)
+		if (!seg.filenameOffset)
 			continue;
 
 		// Set executable flag
@@ -326,23 +327,17 @@ bool loadSegmentList() {
 		File &file = seg.isExecutable ? fExe : fOvl;
 		file.seek(seg.headerOffset);
 
-		// Read the segment header information
-		uint16 codeParagraphOffset = fExe.readWord();
-		fExe.readWord();
-		uint16 relocationStart = fExe.readWord();
-		uint16 numRelocations = fExe.readWord();
-		assert(relocationStart == 0);
-
 		// Get the list of relocations
-		fExe.seek(6 + relocationStart * 4, SEEK_CUR);
-		for (int relCtr = 0; relCtr < numRelocations; ++relCtr, ++extraRelocations) {
-			uint16 offsetVal = fExe.readWord();
-			uint16 segmentVal = fExe.readWord();
+		for (int relCtr = 0; relCtr < (int)seg.relocations.size(); ++relCtr, ++extraRelocations) {
+			int offsetVal = file.readWord();
+			int segmentVal = file.readWord();
 			assert((offsetVal != 0) || (segmentVal != 0));
-			assert((uint32)(segmentVal * 16 + offsetVal) <= seg.codeSize);
+			assert(segmentVal >= seg.loadSegment);
 
-			uint32 v = (segmentVal << 16) + offsetVal;
-			seg.relocations.push_back(v);
+			uint32 v = ((segmentVal - seg.loadSegment) * 16) + offsetVal;
+			assert(v <= seg.codeSize);
+
+			seg.relocations[relCtr] = v;
 		}
 
 		// Process the relocation list to add the relative segment start of this segment's code
