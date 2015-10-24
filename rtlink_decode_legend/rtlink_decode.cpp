@@ -303,7 +303,7 @@ bool loadSegmentList() {
 		seg.loadSegment = READ_LE_UINT16(p);
 		seg.filenameOffset = READ_LE_UINT16(p + 2);
 		seg.headerOffset = (READ_LE_UINT32(p + 4) & 0xffffff) << 4;
-		seg.relocations.resize(READ_LE_UINT16(p + 10));
+		seg.numRelocations = READ_LE_UINT16(p + 10);
 		seg.codeOffset = seg.headerOffset + (((seg.relocations.size() + 3) >> 2) << 4);
 		seg.codeSize = READ_LE_UINT16(p + 16) << 4;
 
@@ -328,22 +328,22 @@ bool loadSegmentList() {
 		file.seek(seg.headerOffset);
 
 		// Get the list of relocations
-		for (int relCtr = 0; relCtr < (int)seg.relocations.size(); ++relCtr, ++extraRelocations) {
-			int offsetVal = file.readWord();
-			int segmentVal = file.readWord();
+		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr, ++extraRelocations) {
+			uint offsetVal = file.readWord();
+			uint segmentVal = file.readWord();
+			if (segmentVal == 0xffff && offsetVal == 0)
+				continue;
+
 			assert((offsetVal != 0) || (segmentVal != 0));
 			assert(segmentVal >= seg.loadSegment);
 
 			uint32 v = ((segmentVal - seg.loadSegment) * 16) + offsetVal;
 			assert(v <= seg.codeSize);
 
-			seg.relocations[relCtr] = v;
+			seg.relocations.push_back(v);
 		}
 
-		// Process the relocation list to add the relative segment start of this segment's code
-		for (uint i = 0; i < seg.relocations.size(); ++i) {
-			seg.relocations[i] += ((seg.codeOffset - codeOffset) >> 4) << 16;
-		}
+		// Sort the list of relocations into relative order
 		Common::sort(seg.relocations.begin(), seg.relocations.end());
 	}
 

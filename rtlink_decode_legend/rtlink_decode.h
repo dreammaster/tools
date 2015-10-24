@@ -62,6 +62,7 @@ public:
 	uint32 codeSize;
 	byte flags;
 	bool isExecutable;
+	int numRelocations;
 	Common::Array<uint32> relocations;
 
 	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
