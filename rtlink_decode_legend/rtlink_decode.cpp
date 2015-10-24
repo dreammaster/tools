@@ -47,7 +47,7 @@ File fExe, fOvl, fOut;
 char exeFilename[MAX_FILENAME_SIZE];
 char ovlFilename[MAX_FILENAME_SIZE];
 char outputFilename[MAX_FILENAME_SIZE];
-uint32 codeStart, rtlinkStrStart, segmentsStart, jumpsStart;
+uint32 codeOffset, exeNameOffset;
 
 uint16 relocOffset, extraRelocations;
 Common::Array<uint32> relocations; 
@@ -65,8 +65,8 @@ SegmentEntryArray segmentList;
 
 bool infoFlag = false, processFlag = false, dataFlag = false;
 
-#define SEG_OFS_TO_OFFSET(seg,ofs) (codeStart + (seg << 4) + ofs)
-#define SEGOFS_TO_OFFSET(segofs) (codeStart + ((segofs >> 16) << 4) + (segofs & 0xffff))
+#define SEG_OFS_TO_OFFSET(seg,ofs) (codeOffset + (seg << 4) + ofs)
+#define SEGOFS_TO_OFFSET(segofs) (codeOffset + ((segofs >> 16) << 4) + (segofs & 0xffff))
 
 /*--------------------------------------------------------------------------
  * Support functions
@@ -78,6 +78,30 @@ int memScan(byte *data, int dataLen, const byte *s, int sLen) {
 		if (!strncmp((const char *)&data[index], (const char *)s, sLen))
 			return index;
 	}
+
+	return -1;
+}
+
+int scanExecutable(const byte *data, int count) {
+	byte buffer[BUFFER_SIZE];
+	assert(count < BUFFER_SIZE);
+
+	fExe.seek(0);
+	do {
+		int fileOffset = fExe.pos();
+		fExe.read(buffer, BUFFER_SIZE);
+
+		int dataIndex = memScan(buffer, BUFFER_SIZE - count, data, count);
+		if (dataIndex >= 0) {
+			int offset = fileOffset + dataIndex;
+			fExe.seek(offset);
+			return offset;
+		}
+
+		// Move slightly backwards in the file before the next iteration and read,
+		// just in case the sequence we're looking for falls across the buffer boundary
+		fExe.seek(-(BUFFER_SIZE - 1), SEEK_CUR);
+	} while (!fExe.eof());
 
 	return -1;
 }
@@ -119,7 +143,7 @@ void copyBytes(int numBytes) {
 uint32 relocationAdjust(uint32 v) {
 	uint16 segVal = v >> 16;
 	uint16 ofsVal = v & 0xffff;
-	uint32 offset = ((uint32)segVal << 4) + ofsVal + codeStart;
+	uint32 offset = ((uint32)segVal << 4) + ofsVal + codeOffset;
 
 	uint16 segmentVal = segVal;
 	if (offset > dataStart + dataSize)
@@ -133,10 +157,10 @@ uint32 relocationAdjust(uint32 v) {
 }
 
 uint32 segmentAdjust(uint16 v) {
-	if (v < ((dataStart - codeStart) >> 4))
+	if (v < ((dataStart - codeOffset) >> 4))
 		// Segment points to base code areas
 		return v;
-	else if (v < ((dataStart + dataSize - codeStart) >> 4))
+	else if (v < ((dataStart + dataSize - codeOffset) >> 4))
 		// Segment points to data segment, adjust it upwards
 		return v + dataSegAdjust;
 
@@ -153,38 +177,34 @@ uint32 segmentAdjust(uint16 v) {
 // Scans the command line for options and switches
 
 void checkCommandLine(int argc, char *argv[]) {
-	int gameId = 0;
-
-	// Loop through parameters
-	for (int idx = 1; idx < argc; ++idx) {
-		if (!strcmp(argv[idx], "xanth"))
-			gameId = 1;
-		else if (!strcmp(argv[idx], "/list"))
-			infoFlag = true;
-		else
-			error("Unknown option - %s", argv[idx]);
-	}
-
 	if (argc == 1) {
 		printf("RTLink(R)/Plus Legend Entertainment executable decoder -- Version 1.0\n\n\
-			   Usage: rtlink_decode xanth [/list | /process]\n");
+			   Usage: rtlink_decode Input.exe [Output.exe]\n");
 		exit(0);
-	} else if (gameId == 1) {
-		// Xanth
-		strcpy(exeFilename, "xanth.exe");
-		strcpy(ovlFilename, "xanth.ovl");
-		rtlinkStrStart = 0x28BC4;
-		segmentsStart = 0x25F49;
-		jumpsStart = 0x266C9;
+	}
 
+	// Set up the executable filename
+	strcpy(exeFilename, argv[1]);
+	_strupr(exeFilename);
+
+	// Set up an optional OVL filename with a .OVL extension
+	strcpy(ovlFilename, exeFilename);
+	char *p = strchr(ovlFilename, '.');
+	if (p) {
+		strcpy(p, ".OVL");
+	}
+
+	// Handle an output filename, if any
+	if (argc == 2) {
+		infoFlag = true;
 	} else {
-		error("No valid game specified");
+		strcpy(outputFilename, argv[2]);
 	}
 }
 
-// validateExecutable
-// Validates that the specified file is an RTLink executable
-
+/**
+ * Validates that the specified file is an RTLink-encoded executable
+ */
 const char *RTLinkStr = ".RTLink(R)/Plus";
 #define RTLINK_STR_SIZE 15
 
@@ -201,7 +221,7 @@ bool validateExecutable() {
 	// Go and grab needed information from the EXE header
 	fExe.seek(6);
 	int numRelocations = fExe.readWord();
-	codeStart = fExe.readWord() << 4;
+	codeOffset = fExe.readWord() << 4;
 	fExe.seek(24);
 	relocOffset = fExe.readWord();
 
@@ -211,35 +231,44 @@ bool validateExecutable() {
 		relocations.push_back(fExe.readLong());
 
 	// Check for the RTLink string
-	fExe.seek(rtlinkStrStart);
-	char buffer[RTLINK_STR_SIZE];
-	fExe.read(buffer, RTLINK_STR_SIZE);
-
-	if (!strncmp(buffer, RTLinkStr, RTLINK_STR_SIZE)) {
+	if (scanExecutable((const byte *)RTLinkStr, RTLINK_STR_SIZE) == -1) {
+		printf("RTLink(R)/Plus identifier not found in specified executable\n");
+		return false;
+	} else {
 		printf("Found RTLink(R)/Plus identifier in executable\n");
 		return true;
 	}
-
-	printf("RTLink(R)/Plus identifier not found in specified executable\n");
-	return false;
 }
 
 /**
- * Load in the list of jump thunks that handle ensuring a particular segment is loaded,
- * and then jump to a particular routine in the segment once loaded
+ * Load in the list of jump thunks that act as stubs for calling methods in dynamic segments
  */
 bool loadJumpList() {
-	fExe.seek(jumpsStart);
-	byte byteVal = 0xE8;
-	int index;
+	exeNameOffset = scanExecutable((const byte *)exeFilename, strlen(exeFilename));
+	if (exeNameOffset == -1) {
+		printf("Could not find the executable's own filename within the file\n");
+		return false;
+	}
+
+	byte byteVal;
+	while ((byteVal = fExe.readByte()) != 0xE8) {
+		if (byteVal > 0 && byteVal < 32) {
+			// After the filename (which is used by an earlier segment list), there may be 
+			// another ASCII filename for an overlay file, and then after that the thunk list.
+			// So if we get any kind of low value, then something's screwed up
+			printf("Couldn't resolve jump list\n");
+			return false;
+		}
+	}
 
 	jumpOffset = fExe.pos() - 1;
 	uint16 aliasSegment = 0;
+	int index;
 
 	while (!fExe.eof() && (byteVal == 0xE8)) {
 		uint32 fileOffset = fExe.pos() - 1;
 
-		// Skip over the thunk call that loads the dynamic segment
+		// Skip over the offset for the thunk call that loads the dynamic segment
 		fExe.readWord();
 
 		byte jmpByte = fExe.readByte();
@@ -278,87 +307,57 @@ bool loadJumpList() {
 // loadSegmentList
 // Loads the list of dynamic segments from the executable
 
-const byte DataFragment[] = {0x02, 0x40, 0x00, 0x00, 0x04, 0x00, 0x04, 0xff, 0xff, 0x00, 0x00};
-
 bool loadSegmentList() {
-	SegmentEntry *rec, *prevRec;
-	byte buffer[BUFFER_SIZE + 16];
+	byte buffer[BUFFER_SIZE];
 	int dataIndex = 0;
 
-	// Scan for the data area where needed values can be located
-	Common::fill(&buffer[BUFFER_SIZE], &buffer[BUFFER_SIZE + 16], 0);
-
-	fExe.seek(0);
+	int bufferStart = exeNameOffset - BUFFER_SIZE;
+	fExe.seek(bufferStart);
 	fExe.read(buffer, BUFFER_SIZE);
-	while (!fExe.eof()) {
-		dataIndex = memScan(buffer, BUFFER_SIZE - 16, DataFragment, 11);
-		if (dataIndex >= 0)
+
+	// The segment list is a set of entries 18 bytes, bytes 14 & 15 of which are the segment number,
+	// which should be in incrementing values. As such, we need to scan backwards through the loaded
+	// buffer until we find decrementing values two bytes wide at intervals of 18 bytes aparat
+	int offset;
+	for (offset = BUFFER_SIZE - 4; offset >= 18 * 5; --offset) {
+		uint num5 = READ_LE_UINT16(buffer + offset);
+		uint num4 = READ_LE_UINT16(buffer + offset - 18);
+		uint num3 = READ_LE_UINT16(buffer + offset - 18 * 2);
+		uint num2 = READ_LE_UINT16(buffer + offset - 18 * 3);
+		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
+		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
+			// Bonza! We've found the the last entry of the list
+			segmentList.resize(num5 + 1);
 			break;
-
-		// Move the last 16 bytes and fill up the rest of the buffer with new data
-		Common::copy(&buffer[BUFFER_SIZE], &buffer[BUFFER_SIZE + 16], &buffer[0]);
-		fExe.read(&buffer[16], BUFFER_SIZE);
+		}
 	}
-
-	if (fExe.eof()) {
-		printf("Failure occurred - could not locate segment table\n");
+	if (offset < (18 * 5)) {
+		printf("Could not find RTLink segment list\n");
 		return false;
 	}
 
-	fExe.seek(-(BUFFER_SIZE + 16 - dataIndex) + 11 + 24, SEEK_CUR);
-	uint32 segmentsSeg = fExe.readWord();
+	// Move backwards through the segment list, loading the entries
+	offset -= 14;
+	for (int segmentNum = segmentList.size() - 1; segmentNum >= 1; --segmentNum, offset -= 18) {
+		SegmentEntry &seg = segmentList[segmentNum];
+		if (READ_LE_UINT16(buffer + offset + 14) != segmentNum)
+			break;
 
-	// Go and get the data
-
-	// Move to the segments position, skipping past the 30h byte header
-	segmentsOffset = codeStart + (segmentsSeg << 4);
-	fExe.seek(segmentsOffset + 0x30);
-
-	rec = NULL;
-	int segmentIndex = 0;
-	for (;;) {
-		// Check next entry
-		uint32 filePos = fExe.pos();
-		fExe.seek(8, SEEK_CUR);
-		uint32 headerOffset = fExe.readLong();
-		fExe.readWord();
-		int newIndex = fExe.readWord() - 1;
-		fExe.seek(16, SEEK_CUR);
-		uint32 nextPos = fExe.pos();
-
-		bool breakFlag = ++segmentIndex != newIndex;
-		if (segmentList.size() > 0) {
-			// If another sequental segment isn't found, break out of loop
-			SegmentEntry &last = segmentList[segmentList.size() - 1];
-			if (breakFlag) {
-				last.codeSize = fExe.size() - last.codeOffset;
-				break;
-			}
-
-			// Set the code size for the previous segment
-			last.codeSize = headerOffset - last.codeOffset;
-		}
-
-		// Create the next entry and add it to the list
-		SegmentEntry rec;
-		rec.offset = filePos;
-		rec.headerOffset = headerOffset;
-		rec.segmentIndex = segmentIndex;
-
-		segmentList.push_back(rec);
+		seg.segmentIndex = segmentNum;
+		seg.offset = bufferStart + offset;
+		seg.headerOffset = READ_LE_UINT32(buffer + offset + 8);
+		
+		seg.codeOffset = 0;
+		seg.codeSize = 1;
 	}
-	
+
 	// Rescan through the list of segments to calculate the code offsets and relocation entries
 
-	extraRelocations = 0;
-	prevRec = NULL;
-	segmentIndex = 0;
-	for (uint segmentCtr = 0; segmentCtr < segmentList.size(); ++segmentCtr) {
-		rec = &segmentList[segmentCtr];
 
-		// Set the previous record's code size
-		if (prevRec != nullptr)
-			prevRec->codeSize = rec->headerOffset - prevRec->codeOffset;
+
+	extraRelocations = 0;
+	for (uint segmentCtr = 0; segmentCtr < segmentList.size(); ++segmentCtr) {
+		SegmentEntry *rec = &segmentList[segmentCtr];
 
 		// Move to the specified offset and read the segment header information
 		fExe.seek(rec->headerOffset + 2);
@@ -385,7 +384,7 @@ bool loadSegmentList() {
 
 		// Process the relocation list to add the relative segment start of this segment's code
 		for (uint i = 0; i < rec->relocations.size(); ++i) {
-			rec->relocations[i] += ((rec->codeOffset - codeStart) >> 4) << 16;
+			rec->relocations[i] += ((rec->codeOffset - codeOffset) >> 4) << 16;
 		}
 		Common::sort(rec->relocations.begin(), rec->relocations.end());
 	}
@@ -470,14 +469,14 @@ void processExecutable() {
 	for (int i = 0; i < relocOffset / 2; ++i) header[i] = fExe.readWord();
 
 	// Set the filesize, taking into account extra space needed for extra relocation entries
-	uint32 newCodeStart = ((relocOffset + (relocations.size() + extraRelocations) * 4 + 511) / 512) * 512;
-	uint32 newSize = newCodeStart + (fExe.size() - codeStart);
+	uint32 newcodeOffset = ((relocOffset + (relocations.size() + extraRelocations) * 4 + 511) / 512) * 512;
+	uint32 newSize = newcodeOffset + (fExe.size() - codeOffset);
 	header[1] = newSize % 512;
 	header[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
 	header[3] = relocations.size() + extraRelocations;
 	// Set the page offset for the code start
-	header[4] = newCodeStart / 16;
+	header[4] = newcodeOffset / 16;
 	// Make sure the file checksum is zero
 	header[9] = 0;
 
@@ -489,7 +488,7 @@ void processExecutable() {
 		if (dataFlag) {
 			uint32 v = relocationAdjust(relocations[i]);
 			fOut.writeLong(v);
-			relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newCodeStart);
+			relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newcodeOffset);
 		}
 		else
 			fOut.writeLong(relocations[i]);
@@ -503,18 +502,18 @@ void processExecutable() {
 			if (dataFlag) {
 				uint32 v = relocationAdjust(segEntry->relocations[i]);
 				fOut.writeLong(v);
-				relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newCodeStart);
+				relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newcodeOffset);
 			} else
 				fOut.writeLong(segEntry->relocations[i]);
 		}
 	}
 
 	// Write out 0 bytes until the code start position
-	int numBytes = newCodeStart - fOut.pos();
+	int numBytes = newcodeOffset - fOut.pos();
 	for (int i = 0; i < numBytes; ++i) fOut.writeByte(0);
 
 	// Copy bytes until the start of the jump alias table
-	fExe.seek(codeStart);
+	fExe.seek(codeOffset);
 	JumpEntry &firstEntry = *jumpList.begin();
 	copyBytes(firstEntry.offset - fExe.pos());
 
@@ -544,7 +543,7 @@ void processExecutable() {
 			SegmentEntry *se = getSegment(je.segmentIndex);
 
 			if (se != NULL) {
-				uint32 segOffset = se->codeOffset - codeStart;
+				uint32 segOffset = se->codeOffset - codeOffset;
 				assert((segOffset % 16) == 0);
 
 				segmentVal += (segOffset >> 4);
@@ -589,34 +588,40 @@ void processExecutable() {
 	printf("\nProcessing complete\n");
 }
 
+void close() {
+	fExe.close();
+	fOvl.close();
+	fOut.close();
+	exit(0);
+}
+
 int main(int argc, char *argv[]) {
 	checkCommandLine(argc, argv);
 
 	// Try to open the specified executable file
-	if (!fExe.open(exeFilename) || !fOvl.open(ovlFilename)) {
+	if (!fExe.open(exeFilename)) {
 		printf("The specified file could not be found\n");
-		exit(0);
+		close();
+	}
+	if (!fOvl.open(ovlFilename)) {
+		// Fall back on opening the exe file again, if no OVL file exists
+		fOvl.open(exeFilename);
 	}
 
-	if (!validateExecutable()) {
-		fExe.close();
-		exit(0);
-	}
+	if (!validateExecutable())
+		close();
 
 	if (!loadJumpList()) {
-		fExe.close();
-		exit(0);
+		close();
 	}
 
 	if (!loadSegmentList()) {
-		fExe.close();
-		exit(0);
+		close();
 	}
 
 	if (dataFlag) {
 		if (!loadDataDetails()) {
-			fExe.close();
-			exit(0);
+			close();
 		}
 	}
 
@@ -627,9 +632,8 @@ int main(int argc, char *argv[]) {
 	if (processFlag) {
 		// Processing mode - make a copy of the executable and update it
 		if (!fOut.open(outputFilename, kFileWriteMode)) {
-			fExe.close();
 			printf("The specified output file '%s' could not be created", outputFilename);
-			exit(0);
+			close();
 		}
 
 		processExecutable();

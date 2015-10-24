@@ -69,7 +69,8 @@ public:
 		return (f != NULL);
 	}
 	void close() {
-		fclose(f);
+		if (f)
+			fclose(f);
 		f = NULL;
 	}
 	int seek(int32 offset, int whence = SEEK_SET) {
