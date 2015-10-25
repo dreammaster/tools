@@ -97,8 +97,6 @@ public:
 
 class SegmentArray : public Common::Array<SegmentEntry> {
 public:
-	SegmentEntry *getSegment(int segmentIndex);
-
 	SegmentEntry *firstEndingSegment() const;
 };
 

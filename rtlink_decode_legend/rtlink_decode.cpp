@@ -153,19 +153,6 @@ bool RelocationArray::contains(uint fileOffset) const {
 }
 
 /**
- * Return the segment with the specified index
- */
-SegmentEntry *SegmentArray::getSegment(int segmentIndex) {
-	for (uint idx = 0; idx < segmentList.size(); ++idx) {
-		SegmentEntry &se = segmentList[idx];
-		if (se.segmentIndex == segmentIndex)
-			return &se;
-	}
-
-	return nullptr;
-}
-
-/**
  * Returns a reference to the first rtlink segment entry that occurs
  * after the data segment in the executable, if there any any
  */
@@ -362,7 +349,6 @@ bool loadSegmentList() {
 		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
 		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
 			// Bonza! We've found the the last entry of the list
-			segmentList.resize(num5);
 			break;
 		}
 
@@ -380,8 +366,10 @@ bool loadSegmentList() {
 	uint lowestFilenameOffset = 0xffff;
 	uint firstSegmentOffset = 0;
 	offset -= 14;
-	for (int segmentNum = (int)segmentList.size(); segmentNum > 0; --segmentNum, offset -= 18) {
-		SegmentEntry &seg = segmentList[segmentNum - 1];
+	for (int segmentNum = READ_LE_UINT16(buffer + offset + 14); 
+			READ_LE_UINT16(buffer + offset + 14) == segmentNum; --segmentNum, offset -= 18) {
+		segmentList.insert_at(0, SegmentEntry());
+		SegmentEntry seg = segmentList[0];
 		byte *p = buffer + offset;
 
 		// If set, it does some extra indexing that I haven't looked into
@@ -444,8 +432,10 @@ bool loadSegmentList() {
 	// which we'll need later to create new relocation offsets for all the thunks
 	int relocIndex;
 	rtlinkSegmentStart = firstSegmentOffset;
-	while ((relocIndex = relocations.indexOf(rtlinkSegmentStart)) == -1)
+	while ((relocIndex = relocations.indexOf(rtlinkSegmentStart)) == -1) {
 		--rtlinkSegmentStart;
+		assert(rtlinkSegmentStart >= 0);
+	}
 	rtlinkSegment = relocations[relocIndex].getSegment();
 
 	return true;
@@ -489,7 +479,7 @@ bool loadJumpList() {
 		uint16 segment = fExe.readWord();
 		int segmentIndex = fExe.readWord();
 
-		SegmentEntry &segEntry = *segmentList.getSegment(segmentIndex);
+		SegmentEntry &segEntry = segmentList[segmentIndex];
 
 		JumpEntry rec;
 		rec.fileOffset = fileOffset;
@@ -647,16 +637,14 @@ void processExecutable() {
 		// Adjust the segment value appropriately
 		if (je.segmentIndex != 0xffff) {
 			// Get the entry for the specified segment index
-			SegmentEntry *se = segmentList.getSegment(je.segmentIndex);
+			SegmentEntry &se = segmentList[je.segmentIndex];
 
-			if (se != NULL) {
-				uint32 segOffset = se->codeOffset - codeOffset;
-				assert((segOffset % 16) == 0);
+			uint32 segOffset = se.codeOffset - codeOffset;
+			assert((segOffset % 16) == 0);
 
-				segmentVal += (segOffset >> 4);
-				if (je.segmentOffset != 0xffff)
-					segmentVal += je.segmentOffset;
-			}
+			segmentVal += (segOffset >> 4);
+			if (je.segmentOffset != 0xffff)
+				segmentVal += je.segmentOffset;
 		}
 
 		// Write out the FAR JMP instruction
