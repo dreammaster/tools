@@ -666,7 +666,6 @@ void processExecutable() {
 	// Iterate through writing the code for each rtlink segment in turn
 	for (uint idx = 0; idx < segmentList.size(); ++idx) {
 		SegmentEntry &se = segmentList[idx];
-		assert(fOut.pos() == se.outputCodeOffset);
 
 		// If the dynamic segment was already present in the executable earlier
 		// than the data segment, it's already been written out, and can be ignored
@@ -674,6 +673,7 @@ void processExecutable() {
 			continue;
 
 		// Write out the dynamic segment
+		assert(fOut.pos() == se.outputCodeOffset);
 		File *file = se.isExecutable ? &fExe : &fOvl;
 		file->seek(se.codeOffset);
 		copyBytes(se.codeSize, file);
