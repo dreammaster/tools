@@ -102,7 +102,7 @@ typedef Common::Array<JumpEntry> JumpEntryList;
 JumpEntryList jumpList;
 SegmentArray segmentList;
 
-bool infoFlag = false, processFlag = false;
+bool infoFlag = false;
 
 uint outputCodeOffset, outputDataOffset;
 
@@ -360,7 +360,7 @@ bool loadSegmentList() {
 	for (int segmentNum = READ_LE_UINT16(buffer + offset + 14); 
 			READ_LE_UINT16(buffer + offset + 14) == segmentNum; --segmentNum, offset -= 18) {
 		segmentList.insert_at(0, SegmentEntry());
-		SegmentEntry seg = segmentList[0];
+		SegmentEntry &seg = segmentList[0];
 		byte *p = buffer + offset;
 
 		// If set, it does some extra indexing that I haven't looked into
@@ -378,6 +378,7 @@ bool loadSegmentList() {
 		seg.numRelocations = READ_LE_UINT16(p + 10);
 		seg.codeOffset = seg.headerOffset + (((seg.relocations.size() + 3) >> 2) << 4);
 		seg.codeSize = READ_LE_UINT16(p + 16) << 4;
+		assert((seg.codeSize % 16) == 0);
 
 		firstSegmentOffset = seg.offset;
 
@@ -392,8 +393,6 @@ bool loadSegmentList() {
 	extraRelocations = 0;
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &seg = segmentList[segmentNum];
-		if (!seg.filenameOffset)
-			continue;
 
 		// Set executable flag
 		seg.isExecutable = exeFilenameIsFirst == (seg.filenameOffset == lowestFilenameOffset);
@@ -423,12 +422,12 @@ bool loadSegmentList() {
 	// entry in the executable's relocations list. This will tell us the RTLink segment,
 	// which we'll need later to create new relocation offsets for all the thunks
 	int relocIndex;
-	rtlinkSegmentStart = firstSegmentOffset;
-	while ((relocIndex = relocations.indexOf(rtlinkSegmentStart)) == -1) {
-		--rtlinkSegmentStart;
-		assert(rtlinkSegmentStart >= 0);
+	while ((relocIndex = relocations.indexOf(firstSegmentOffset)) == -1) {
+		--firstSegmentOffset;
+		assert(firstSegmentOffset >= 0);
 	}
 	rtlinkSegment = relocations[relocIndex].getSegment();
+	rtlinkSegmentStart = codeOffset + rtlinkSegment * 16;
 
 	return true;
 }
@@ -487,14 +486,10 @@ bool loadJumpList() {
 }
 
 /**
-* Loads the start and size of the data segment
-*/
-const char *DataSegmentStr = "MS Run-Time Library";
-
-/**
- * Figures out the starting point and size for the executable's data segment
+ * Loads the start and size of the data segment
  */
 bool loadDataDetails() {
+	const char *DataSegmentStr = "MS Run-Time Library";
 	int fileOffset = scanExecutable((const byte *)DataSegmentStr, strlen(DataSegmentStr));
 	if (fileOffset == -1) {
 		printf("Failure occurred - could not locate data segment\n");
@@ -581,7 +576,7 @@ void updateRelocationEntries() {
 		} else {
 			// It's a segment to be relocated, so use the current output offset
 			se.outputCodeOffset = outputOffset;
-			outputOffset += ((se.codeSize + 15) / 16) * 16;
+			outputOffset += se.codeSize;
 		}
 		
 		// Iterate through the dynamic relocation entries for the segment and add them in
@@ -620,7 +615,7 @@ void processExecutable() {
 	header[1] = newSize % 512;
 	header[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
-	header[3] = relocations.size() + extraRelocations;
+	header[3] = relocations.size();
 	// Set the page offset for the code start
 	header[4] = outputCodeOffset / 16;
 	// Make sure the file checksum is zero
@@ -636,7 +631,7 @@ void processExecutable() {
 
 	// Write out 0 bytes until the code start position
 	int numBytes = outputCodeOffset - fOut.pos();
-	for (int i = 0; i < numBytes; ++i) fOut.writeByte(0);
+	fOut.writeByte(0, numBytes);
 
 	// Copy bytes until the start of the jump alias table
 	fExe.seek(codeOffset);
@@ -655,7 +650,7 @@ void processExecutable() {
 		assert(numBytes >= 0);
 		if (numBytes > 0) {
 			fExe.seek(numBytes, SEEK_CUR);
-			while (numBytes-- > 0) fOut.writeByte(0x90);
+			fOut.writeByte(0x90, numBytes);
 		}
 
 		// Write out the new JMP
@@ -671,7 +666,8 @@ void processExecutable() {
 	// Iterate through writing the code for each rtlink segment in turn
 	for (uint idx = 0; idx < segmentList.size(); ++idx) {
 		SegmentEntry &se = segmentList[idx];
-		
+		assert(fOut.pos() == se.outputCodeOffset);
+
 		// If the dynamic segment was already present in the executable earlier
 		// than the data segment, it's already been written out, and can be ignored
 		if (se.isExecutable && se.codeOffset < dataSegmentOffset)
@@ -719,11 +715,11 @@ int main(int argc, char *argv[]) {
 	if (!loadDataDetails())
 		close();
 
-	if (infoFlag) 
+	if (infoFlag) {
 		// Informational mode - list the RTLink data
 		listInfo();
 
-	if (processFlag) {
+	} else {
 		// Processing mode - make a copy of the executable and update it
 		if (!fOut.open(outputFilename, kFileWriteMode)) {
 			printf("The specified output file '%s' could not be created", outputFilename);

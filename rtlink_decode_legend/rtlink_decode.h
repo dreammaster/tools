@@ -145,6 +145,12 @@ public:
 	void writeByte(byte v) {
 		write(&v, sizeof(byte));
 	}
+	void writeByte(byte v, int len) {
+		byte *b = new byte[len];
+		memset(b, v, len);
+		write(b, len);
+		delete[] b;
+	}
 	void writeWord(uint16 v) {
 		uint16 vTemp = TO_LE_16(v);
 		write(&vTemp, sizeof(uint16));
