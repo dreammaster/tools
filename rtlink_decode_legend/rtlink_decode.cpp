@@ -95,15 +95,16 @@ uint16 relocOffset, extraRelocations;
 RelocationArray relocations; 
 Common::Array<uint32> relocationOffsets; 
 
-uint32 dataStart, dataSize;
-uint16 dataSegAdjust;
+uint32 dataSegmentOffset, dataSize;
 
 uint32 jumpOffset, segmentsOffset, segmentsSize;
-typedef Common::List<JumpEntry> JumpEntryList;
+typedef Common::Array<JumpEntry> JumpEntryList;
 JumpEntryList jumpList;
 SegmentArray segmentList;
 
 bool infoFlag = false, processFlag = false;
+
+uint outputCodeOffset, outputDataOffset;
 
 /*--------------------------------------------------------------------------
 * Support classes
@@ -117,20 +118,11 @@ uint RelocationEntry::fileOffset() const {
 	return codeOffset + ((_value >> 16) << 4) + (_value & 0xffff);
 }
 
-uint RelocationEntry::adjust() const {
-	uint16 segVal = getSegment();
-	uint16 ofsVal = getOffset();
-	uint32 offset = fileOffset();
-
-	uint16 segmentVal = segVal;
-	if (offset > dataStart + dataSize)
-		// Relocation entry within dynamic code, adjust it backwards
-		segmentVal = segVal - (dataSize >> 4);
-	else if (offset > dataStart)
-		// Adjustment of data segment relocation entry to end of file
-		segmentVal = segVal + dataSegAdjust;
-
-	return ((uint32)segmentVal << 16) | ofsVal;
+/**
+ * Add an amount onto the segment portion of a relocation entry
+ */
+void RelocationEntry::addSegment(uint16 seg) {
+	_value += (uint)seg << 16;
 }
 
 /**
@@ -162,7 +154,7 @@ SegmentEntry *SegmentArray::firstEndingSegment() const {
 	SegmentEntry *segmentEntry = nullptr;
 	for (uint idx = 0; idx < size(); ++idx) {
 		SegmentEntry &se = segmentList[idx];
-		if (se.filenameOffset && se.isExecutable && se.headerOffset > dataStart && se.headerOffset < offset) {
+		if (se.filenameOffset && se.isExecutable && se.headerOffset > dataSegmentOffset && se.headerOffset < offset) {
 			offset = se.headerOffset;
 			segmentEntry = &se;
 		}
@@ -184,6 +176,9 @@ void RelocationArray::sort() {
  *
  *--------------------------------------------------------------------------*/
 
+/**
+ * Scan a memory block for a given byte sequence of a given length
+ */
 int memScan(byte *data, int dataLen, const byte *s, int sLen) {
 	for (int index = 0; index < dataLen - sLen - 1; ++index) {
 		if (!strncmp((const char *)&data[index], (const char *)s, sLen))
@@ -193,6 +188,10 @@ int memScan(byte *data, int dataLen, const byte *s, int sLen) {
 	return -1;
 }
 
+/**
+ * Scans the entire executable file for a given byte sequence and, if found,
+ * returns the offset within the file
+ */
 int scanExecutable(const byte *data, int count) {
 	byte buffer[BUFFER_SIZE];
 	assert(count < BUFFER_SIZE);
@@ -217,31 +216,23 @@ int scanExecutable(const byte *data, int count) {
 	return -1;
 }
 
-void copyBytes(int numBytes) {
+/**
+ * Copies a specified number of bytes from the executable to the new 
+ * file being created
+ */
+void copyBytes(int numBytes, File *f = &fExe) {
 	byte buffer[BUFFER_SIZE];
 
 	while (numBytes > BUFFER_SIZE) {
-		fExe.read(buffer, BUFFER_SIZE);
+		f->read(buffer, BUFFER_SIZE);
 		fOut.write(buffer, BUFFER_SIZE);
 		numBytes -= BUFFER_SIZE;
 	}
 
 	if (numBytes > 0) {
-		fExe.read(buffer, numBytes);
+		f->read(buffer, numBytes);
 		fOut.write(buffer, numBytes);
 	}
-}
-
-uint32 segmentAdjust(uint16 v) {
-	if (v < ((dataStart - codeOffset) >> 4))
-		// Segment points to base code areas
-		return v;
-	else if (v < ((dataStart + dataSize - codeOffset) >> 4))
-		// Segment points to data segment, adjust it upwards
-		return v + dataSegAdjust;
-
-	// Segment points to a dynamic code segment, so adjust it down
-	return v - (dataSize >> 4);
 }
 
 /*--------------------------------------------------------------------------
@@ -398,6 +389,7 @@ bool loadSegmentList() {
 
 	// Iterate through the list to set whether each segment is using the executable or OVL,
 	// and to load the relocation entries from the start of that segment's data
+	extraRelocations = 0;
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &seg = segmentList[segmentNum];
 		if (!seg.filenameOffset)
@@ -475,7 +467,7 @@ bool loadJumpList() {
 			break;
 
 		// Skip over offset within dynamic segments to jump to, and get the segment value
-		fExe.readWord();
+		uint16 offsetInSegment = fExe.readWord();
 		uint16 segment = fExe.readWord();
 		int segmentIndex = fExe.readWord();
 
@@ -485,6 +477,7 @@ bool loadJumpList() {
 		rec.fileOffset = fileOffset;
 		rec.segmentIndex = segmentIndex;
 		rec.segmentOffset = segment - segEntry.loadSegment;
+		rec.offsetInSegment = offsetInSegment;
 		jumpList.push_back(rec);
 
 		byteVal = fExe.readByte();
@@ -498,6 +491,9 @@ bool loadJumpList() {
 */
 const char *DataSegmentStr = "MS Run-Time Library";
 
+/**
+ * Figures out the starting point and size for the executable's data segment
+ */
 bool loadDataDetails() {
 	int fileOffset = scanExecutable((const byte *)DataSegmentStr, strlen(DataSegmentStr));
 	if (fileOffset == -1) {
@@ -506,24 +502,23 @@ bool loadDataDetails() {
 	}
 
 	assert((fileOffset % 8) == 0);
-	dataStart = fileOffset - 8;
+	dataSegmentOffset = fileOffset - 8;
 
 	// Find the earliest dynamic segment, if any, that follows the data segment. 
 	// This will be used as the end of the data segment
 	SegmentEntry *firstEntry = segmentList.firstEndingSegment();
 	if (firstEntry) {
-		dataSize = firstEntry->headerOffset - dataStart;
+		dataSize = firstEntry->headerOffset - dataSegmentOffset;
 	} else {
-		dataSize = fExe.size() - dataStart;
+		dataSize = fExe.size() - dataSegmentOffset;
 	}
-
-	// Figure out how much data segment relocations must be adjusted up by,
-	// since we need to move it to the end of the file after the dynamic segments
-	dataSegAdjust = (fExe.size() + fOvl.size() - (dataStart + dataSize)) >> 4;
 
 	return true;
 }
 
+/**
+ * In info mode, lists out some basic data for the segments and jump table
+ */
 void listInfo() {
 	printf("\nSegment list at offset %xh, size %xh:\n", segmentsOffset, segmentsSize);
 	printf("\n\
@@ -549,6 +544,69 @@ Exe Offset    Segment Index    Segment Offset\n\
 	printf("\n");
 }
 
+/**
+ * For processing mode, handles updating the existing entries as needed,as well
+ * as adding in all the needed new entries
+ */
+void updateRelocationEntries() {
+	// Figure out the code start in the new executable, allowing enough room to put
+	// in all the relocations that be copied out from the rtlink segments
+	int originalCount = relocations.size();
+	int totalRelocations = originalCount + extraRelocations + jumpList.size();
+	outputCodeOffset = (((relocOffset + totalRelocations * 4) + 511) / 512) * 512;
+	if (outputCodeOffset < codeOffset)
+		outputCodeOffset = codeOffset;
+
+	// The rtlink segments will be moved to where the data segment was in the original
+	// executable, which will then follow them at the end of the file
+	uint32 outputOffset = (outputCodeOffset - codeOffset) + dataSegmentOffset;
+
+	// We'll need to add in relocation entries for each of the thunk methods to handle
+	// the hard-coded far jump we'll be replacing each one with
+	for (uint idx = 0; idx < jumpList.size(); ++idx) {
+		JumpEntry &je = jumpList[idx];
+		uint offset = (je.fileOffset - rtlinkSegmentStart) + 3;
+		relocations.push_back(RelocationEntry(rtlinkSegment, offset));
+	}
+
+	// Iterate through each of the rtlink segments
+	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
+		SegmentEntry &se = segmentList[segmentNum];
+
+		if (se.isExecutable && se.codeOffset < dataSegmentOffset) {
+			// It's a segment before the data segment in the executable. In which
+			// case use the original offset, simply adjusted by any resizing of
+			// the relocation table at the start of the executable
+			se.outputCodeOffset = (outputCodeOffset - codeOffset) + se.codeOffset;
+		} else {
+			// It's a segment to be relocated, so use the current output offset
+			se.outputCodeOffset = outputOffset;
+			outputOffset += ((se.codeSize + 15) / 16) * 16;
+		}
+		
+		// Iterate through the dynamic relocation entries for the segment and add them in
+		uint baseSegment = (se.outputCodeOffset - outputCodeOffset) >> 4;
+		
+		for (uint idx = 0; idx < se.relocations.size(); ++idx) {
+			relocations.push_back(se.relocations[idx]);
+			relocations[relocations.size() - 1].addSegment(baseSegment);
+		}
+	}
+
+	// The data segment goes at the end of the new file after all these segments
+	outputDataOffset = outputOffset;
+
+	// Process the original set of relocation entries. Any relocation entries
+	// that were pointing into the data segment will need to be adjusted to 
+	// point to the new location
+	for (int idx = 0; idx < originalCount; ++idx) {
+		RelocationEntry &re = relocations[idx];
+		if (re.fileOffset() > dataSegmentOffset) {
+			re.addSegment((outputDataOffset - dataSegmentOffset) >> 4);
+		}
+	}
+}
+
 void processExecutable() {
 	assert(relocOffset % 2 == 0);
 	uint16 *header = new uint16[relocOffset / 2];
@@ -558,129 +616,77 @@ void processExecutable() {
 	for (int i = 0; i < relocOffset / 2; ++i) header[i] = fExe.readWord();
 
 	// Set the filesize, taking into account extra space needed for extra relocation entries
-	uint32 newcodeOffset = ((relocOffset + (relocations.size() + extraRelocations) * 4 + 511) / 512) * 512;
-	uint32 newSize = newcodeOffset + (fExe.size() - codeOffset);
+	uint32 newSize = outputDataOffset + dataSize;
 	header[1] = newSize % 512;
 	header[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
 	header[3] = relocations.size() + extraRelocations;
 	// Set the page offset for the code start
-	header[4] = newcodeOffset / 16;
+	header[4] = outputCodeOffset / 16;
 	// Make sure the file checksum is zero
 	header[9] = 0;
 
 	for (int i = 0; i < relocOffset / 2; ++i) fOut.writeWord(header[i]);
 	delete header;
 
-	// TODO: Figure out relocations for the thunks
-	exit(0);//***DEBUG***
-	/*
-	// Create a new relocation entry for the replacement FAR JMP instruction we'll be creating.
-	// Since it's encoded as E8 |offset word| |segment word|, set the 
-	index = relocations.indexOf(fileOffset + 3);
-	if (index == -1) {
-		uint rtlinkSegOffset = fileOffset + 3 - rtlinkSegment;
-		//			relocations.push_back()				
-		//				(aliasSegment << 16) + (fileOffset + 3 - (aliasSegment << 4)));
-		printf("Added entry for file offset %xh", fileOffset + 3,
-			relocations[relocations.size() - 1]);
-	}
-	*/
-
-	// Copy over the existing relocation entries
+	// Copy over the relocation list
 	for (uint i = 0; i < relocations.size(); ++i) {
-		uint32 v = relocations[i].adjust();
-		fOut.writeLong(v);
-		relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newcodeOffset);
-	}
-
-	// Loop through adding new relocation entries for each segment
-	for (uint segmentCtr = 0; segmentCtr < segmentList.size(); ++segmentCtr) {
-		SegmentEntry *segEntry = &segmentList[segmentCtr];
-
-		for (uint i = 0; i < segEntry->relocations.size(); ++i) {
-			uint32 v = segEntry->relocations[i].adjust();
-			fOut.writeLong(v);
-			relocationOffsets.push_back(((v >> 16) << 4) + (v & 0xffff) + newcodeOffset);
-		}
+		fOut.writeLong(relocations[i]);
 	}
 
 	// Write out 0 bytes until the code start position
-	int numBytes = newcodeOffset - fOut.pos();
+	int numBytes = outputCodeOffset - fOut.pos();
 	for (int i = 0; i < numBytes; ++i) fOut.writeByte(0);
 
 	// Copy bytes until the start of the jump alias table
 	fExe.seek(codeOffset);
-	JumpEntry &firstEntry = *jumpList.begin();
-	copyBytes(firstEntry.fileOffset - fExe.pos());
+	JumpEntry &firstEntry = jumpList[0];
+	copyBytes(firstEntry.fileOffset - codeOffset);
 
-	// Loop through handling the jump aliases - we'll be moving the FAR JMP over the FAR CALL, and
-	// replacing the original FAR JMP with a set of NOPs
+	// Loop through handling the jump aliases - we'll be creating FAR JMP 
+	// instructions at the start of the thunk methods, and the rest of
+	// the thunk will be replaced with a set of NOPs
+	for (uint idx = 0; idx < jumpList.size(); ++idx) {
+		JumpEntry &je = jumpList[idx];
+		SegmentEntry &segEntry = segmentList[je.segmentIndex];
 
-	JumpEntryList::iterator ij;
-	for (ij = jumpList.begin(); ij != jumpList.end(); ++ij) {
-		JumpEntry &je = *ij;
-
-		// Write out null bytes between FAR JMPs
+		// Write out NOP bytes between FAR JMPs
 		int numBytes = je.fileOffset - fExe.pos();
 		assert(numBytes >= 0);
 		if (numBytes > 0) {
 			fExe.seek(numBytes, SEEK_CUR);
-			while (numBytes-- > 0) fOut.writeByte(0);
+			while (numBytes-- > 0) fOut.writeByte(0x90);
 		}
 
-		// Get the data from the source
-		fExe.seek(6, SEEK_CUR);
-		uint16 offsetVal = fExe.readWord();
-		uint32 segmentVal = fExe.readWord();		// Normally zero
-
-		// Adjust the segment value appropriately
-		if (je.segmentIndex != 0xffff) {
-			// Get the entry for the specified segment index
-			SegmentEntry &se = segmentList[je.segmentIndex];
-
-			uint32 segOffset = se.codeOffset - codeOffset;
-			assert((segOffset % 16) == 0);
-
-			segmentVal += (segOffset >> 4);
-			if (je.segmentOffset != 0xffff)
-				segmentVal += je.segmentOffset;
-		}
-
-		// Write out the FAR JMP instruction
+		// Write out the new JMP
 		fOut.writeByte(0xEA);
-		fOut.writeWord(offsetVal);
-		fOut.writeWord(segmentVal);
-
-		// Write 5 padding bytes after the last entry
-		for (int i = 0; i < 5; ++i) fOut.writeByte(0);
+		fOut.writeWord(je.offsetInSegment);
+		fOut.writeWord(je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16);
+		fExe.skip(5);
 	}
 
 	// Write out the data to the start of the data segment
-	copyBytes(dataStart - fExe.pos());
+	copyBytes(dataSegmentOffset - fExe.pos());
 
-	// The data segment is being moved, so don't copy it over
-	fExe.skip(dataSize);
+	// Iterate through writing the code for each rtlink segment in turn
+	for (uint idx = 0; idx < segmentList.size(); ++idx) {
+		SegmentEntry &se = segmentList[idx];
+		
+		// If the dynamic segment was already present in the executable earlier
+		// than the data segment, it's already been written out, and can be ignored
+		if (se.isExecutable && se.codeOffset < dataSegmentOffset)
+			continue;
 
-	// Write out the rest of the file
-	copyBytes(fExe.size() - fExe.pos());
-
-	// Write out the OVL file, if present
-
-
-	// Write out the data segment
-	fExe.seek(dataStart);
-	copyBytes(dataSize);
-
-	// If data segment has been moved, adjust the segment offsets of all relocations
-	for (uint i = 0; i < relocationOffsets.size(); ++i) {
-		fOut.seek(relocationOffsets[i]);
-		uint16 v = fOut.readWord();
-		fOut.seek(-2, SEEK_CUR);
-		fOut.writeWord(segmentAdjust(v));
+		// Write out the dynamic segment
+		File *file = se.isExecutable ? &fExe : &fOvl;
+		file->seek(se.codeOffset);
+		copyBytes(se.codeSize, file);
 	}
 
-	fOut.seek(0, SEEK_END);
+	// Finally, write out the data segment
+	fExe.seek(dataSegmentOffset);
+	copyBytes(dataSize);
+
 	printf("\nProcessing complete\n");
 }
 
@@ -723,6 +729,8 @@ int main(int argc, char *argv[]) {
 			printf("The specified output file '%s' could not be created", outputFilename);
 			close();
 		}
+
+		updateRelocationEntries();
 
 		processExecutable();
 

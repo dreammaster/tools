@@ -47,6 +47,7 @@ struct JumpEntry {
 	uint32 fileOffset;
 	uint16 segmentIndex;
 	uint16 segmentOffset;
+	uint16 offsetInSegment;
 };
 
 struct RelocationEntry {
@@ -56,9 +57,9 @@ struct RelocationEntry {
 
 	RelocationEntry(uint16 seg, uint16 ofs) : _value(((uint32)seg << 16) + ofs) {}
 
-	uint fileOffset() const;
+	void addSegment(uint16 seg);
 
-	uint adjust() const;
+	uint fileOffset() const;
 
 	operator uint() const { return _value; }
 
@@ -90,6 +91,7 @@ public:
 	bool isExecutable;
 	int numRelocations;
 	RelocationArray relocations;
+	uint32 outputCodeOffset;
 
 	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
 		codeOffset(0), codeSize(0), flags(0), isExecutable(false) {}
