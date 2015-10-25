@@ -44,10 +44,36 @@ enum AccessMode {
 };
 
 struct JumpEntry {
-	uint32 offset;
+	uint32 fileOffset;
 	uint16 segmentIndex;
 	uint16 segmentOffset;
-	bool altFlag;
+};
+
+struct RelocationEntry {
+	uint32 _value;
+
+	RelocationEntry(uint32 v) : _value(v) {}
+
+	RelocationEntry(uint16 seg, uint16 ofs) : _value(((uint32)seg << 16) + ofs) {}
+
+	uint fileOffset() const;
+
+	uint adjust() const;
+
+	operator uint() const { return _value; }
+
+	uint getOffset() const { return _value & 0xffff; }
+
+	uint getSegment() const { return _value >> 16; }
+};
+
+class RelocationArray : public Common::Array<RelocationEntry> {
+public:
+	int indexOf(uint fileOffset) const;
+
+	bool contains(uint fileOffset) const;
+
+	void sort();
 };
 
 class SegmentEntry {
@@ -63,10 +89,17 @@ public:
 	byte flags;
 	bool isExecutable;
 	int numRelocations;
-	Common::Array<uint32> relocations;
+	RelocationArray relocations;
 
 	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
 		codeOffset(0), codeSize(0), flags(0), isExecutable(false) {}
+};
+
+class SegmentArray : public Common::Array<SegmentEntry> {
+public:
+	SegmentEntry *getSegment(int segmentIndex);
+
+	SegmentEntry *firstEndingSegment() const;
 };
 
 class File {
@@ -124,11 +157,15 @@ public:
 		return ftell(f);
 	}
 	uint32 size() const {
-		uint32 currentPos = pos();
-		fseek(f, 0, SEEK_END);
-		uint32 result = pos();
-		fseek(f, currentPos, SEEK_SET);
-		return result;
+		if (f) {
+			uint32 currentPos = pos();
+			fseek(f, 0, SEEK_END);
+			uint32 result = pos();
+			fseek(f, currentPos, SEEK_SET);
+			return result;
+		} else {
+			return 0;
+		}
 	}
 	bool eof() const { return feof(f) != 0; }
 };
