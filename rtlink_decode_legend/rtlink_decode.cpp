@@ -402,7 +402,7 @@ bool loadSegmentList() {
 		file.seek(seg.headerOffset);
 
 		// Get the list of relocations
-		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr, ++extraRelocations) {
+		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr) {
 			uint offsetVal = file.readWord();
 			uint segmentVal = file.readWord();
 			if (segmentVal == 0xffff && offsetVal == 0)
@@ -411,6 +411,7 @@ bool loadSegmentList() {
 			assert((offsetVal != 0) || (segmentVal != 0));
 			assert(segmentVal >= seg.loadSegment);
 
+			++extraRelocations;
 			seg.relocations.push_back(RelocationEntry(segmentVal, offsetVal));
 		}
 
@@ -600,6 +601,8 @@ void updateRelocationEntries() {
 			re.addSegment((outputDataOffset - dataSegmentOffset) >> 4);
 		}
 	}
+
+	assert(relocations.size() == totalRelocations);
 }
 
 void processExecutable() {
