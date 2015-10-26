@@ -376,7 +376,7 @@ bool loadSegmentList() {
 		seg.filenameOffset = READ_LE_UINT16(p + 2);
 		seg.headerOffset = (READ_LE_UINT32(p + 4) & 0xffffff) << 4;
 		seg.numRelocations = READ_LE_UINT16(p + 10);
-		seg.codeOffset = seg.headerOffset + (((seg.relocations.size() + 3) >> 2) << 4);
+		seg.codeOffset = seg.headerOffset + (((seg.numRelocations + 3) >> 2) << 4);
 		seg.codeSize = READ_LE_UINT16(p + 16) << 4;
 		assert((seg.codeSize % 16) == 0);
 
