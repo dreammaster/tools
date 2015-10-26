@@ -412,7 +412,7 @@ bool loadSegmentList() {
 			assert(segmentVal >= seg.loadSegment);
 
 			++extraRelocations;
-			seg.relocations.push_back(RelocationEntry(segmentVal, offsetVal));
+			seg.relocations.push_back(RelocationEntry(segmentVal - seg.loadSegment, offsetVal));
 		}
 
 		// Sort the list of relocations into relative order
@@ -548,7 +548,7 @@ void updateRelocationEntries() {
 	// Figure out the code start in the new executable, allowing enough room to put
 	// in all the relocations that be copied out from the rtlink segments
 	int originalCount = relocations.size();
-	int totalRelocations = originalCount + extraRelocations + jumpList.size();
+	int totalRelocations = originalCount + extraRelocations;
 	outputCodeOffset = (((relocOffset + totalRelocations * 4) + 511) / 512) * 512;
 	if (outputCodeOffset < codeOffset)
 		outputCodeOffset = codeOffset;
@@ -556,14 +556,6 @@ void updateRelocationEntries() {
 	// The rtlink segments will be moved to where the data segment was in the original
 	// executable, which will then follow them at the end of the file
 	uint32 outputOffset = (outputCodeOffset - codeOffset) + dataSegmentOffset;
-
-	// We'll need to add in relocation entries for each of the thunk methods to handle
-	// the hard-coded far jump we'll be replacing each one with
-	for (uint idx = 0; idx < jumpList.size(); ++idx) {
-		JumpEntry &je = jumpList[idx];
-		uint offset = (je.fileOffset - rtlinkSegmentStart) + 3;
-		relocations.push_back(RelocationEntry(rtlinkSegment, offset));
-	}
 
 	// Iterate through each of the rtlink segments
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
@@ -582,7 +574,6 @@ void updateRelocationEntries() {
 		
 		// Iterate through the dynamic relocation entries for the segment and add them in
 		uint baseSegment = (se.outputCodeOffset - outputCodeOffset) >> 4;
-		
 		for (uint idx = 0; idx < se.relocations.size(); ++idx) {
 			relocations.push_back(se.relocations[idx]);
 			relocations[relocations.size() - 1].addSegment(baseSegment);
@@ -602,6 +593,7 @@ void updateRelocationEntries() {
 		}
 	}
 
+	Common::sort(relocations.begin(), relocations.end(), relocationSortHelper);
 	assert(relocations.size() == totalRelocations);
 }
 
@@ -641,26 +633,23 @@ void processExecutable() {
 	JumpEntry &firstEntry = jumpList[0];
 	copyBytes(firstEntry.fileOffset - codeOffset);
 
-	// Loop through handling the jump aliases - we'll be creating FAR JMP 
-	// instructions at the start of the thunk methods, and the rest of
-	// the thunk will be replaced with a set of NOPs
+	// Loop through handling the jump methods
 	for (uint idx = 0; idx < jumpList.size(); ++idx) {
 		JumpEntry &je = jumpList[idx];
 		SegmentEntry &segEntry = segmentList[je.segmentIndex];
 
-		// Write out NOP bytes between FAR JMPs
-		int numBytes = je.fileOffset - fExe.pos();
-		assert(numBytes >= 0);
-		if (numBytes > 0) {
-			fExe.seek(numBytes, SEEK_CUR);
-			fOut.writeByte(0x90, numBytes);
-		}
+		// Copy over the call to the rtlink load method, and the opcode
+		// byte for the following FAR JMP instruction
+		copyBytes(4);
 
 		// Write out the new JMP
-		fOut.writeByte(0xEA);
 		fOut.writeWord(je.offsetInSegment);
 		fOut.writeWord(je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16);
-		fExe.skip(5);
+		fExe.skip(4);
+
+		// Nop out the segment number at the end of the thunk method
+		fOut.writeByte(0x90, 2);
+		fExe.skip(2);
 	}
 
 	// Write out the data to the start of the data segment
