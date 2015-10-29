@@ -75,6 +75,8 @@ public:
 	bool contains(uint fileOffset) const;
 
 	void sort();
+
+	void sortNew();
 };
 
 class SegmentEntry {
@@ -89,17 +91,20 @@ public:
 	uint32 codeSize;
 	byte flags;
 	bool isExecutable;
+	bool isDataSegment;
 	int numRelocations;
 	RelocationArray relocations;
 	uint32 outputCodeOffset;
 
 	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
-		codeOffset(0), codeSize(0), flags(0), isExecutable(false) {}
+		codeOffset(0), codeSize(0), flags(0), isExecutable(false), isDataSegment(false) {}
 };
 
 class SegmentArray : public Common::Array<SegmentEntry> {
 public:
-	SegmentEntry *firstEndingSegment() const;
+	SegmentEntry &firstExeSegment();
+
+	void sort();
 };
 
 class File {
