@@ -530,10 +530,11 @@ bool loadDataDetails() {
 		}
 	}
 
+	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
 	if (segmentOvlCount > 0 && segmentExeCount != 1) {
 		printf("Warning.. multiple segments found in Exe. Presuming last is data segment(s)\n");
-	} else if (segmentList[segmentList.size() - 1].isExecutable) {
-		segmentList[segmentList.size() - 1].isDataSegment = true;
+	} else if (lastSeg.isExecutable) {
+		lastSeg.isDataSegment = true;
 	}
 	return true;
 }
@@ -582,6 +583,28 @@ void updateRelocationEntries() {
 	}
 
 	originalRelocationCount = relocations.size();
+
+	// For the data segment, we need to do a bit of pre-processing on the relocation 
+	// entries.. some of the selectors pointed to are for segments outside the data 
+	// segment, and into the area of memory rtlink segments are loaded into. 
+	// As such, they can't really be mapped to a single specific segment in the decoded 
+	// data, and what's worse, can screw up segment sizes when the decoded exe is 
+	// disassembled. So scan for such entries and delete them now
+	SegmentEntry &dataSeg = segmentList.dataSegment();
+	for (int idx = (int)dataSeg.relocations.size() - 1; idx >= 0; --idx) {
+		RelocationEntry &re = dataSeg.relocations[idx];
+		
+		// Figure out the file position the relocation entry points to (with adjustment
+		// relative to the start of the data segment), and read in the segment selector
+		uint fileOffset = re.fileOffset() + (dataSeg.codeOffset - codeOffset);
+		fExe.seek(fileOffset);
+		uint selector = fExe.readWord();
+
+		if (selector < dataSeg.loadSegment && selector >= segmentList[0].loadSegment) {
+			dataSeg.relocations.remove_at(idx);
+			--extraRelocations;
+		}
+	}
 
 	// Figure out the code start in the new executable, allowing enough room to put
 	// in all the relocations that be copied out from the rtlink segments
@@ -798,8 +821,9 @@ uint maxSeg = 0; //**DEBUG**
 	//***DEBUG****
 	for (uint idx = 0; idx < relocations.size(); ++idx) {
 		RelocationEntry &re = relocations[idx];
+		uint fileOffset = (outputCodeOffset - codeOffset) + re.fileOffset();
 
-		fOut.seek((outputCodeOffset - codeOffset) + re.fileOffset());
+		fOut.seek(fileOffset);
 		uint selector = fOut.readWord();
 
 		if (segs[selector] != selector) {
