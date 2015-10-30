@@ -106,6 +106,8 @@ class SegmentArray : public Common::Array<SegmentEntry> {
 public:
 	SegmentEntry &firstExeSegment();
 
+	SegmentEntry &dataSegment();
+
 	void sort();
 };
 

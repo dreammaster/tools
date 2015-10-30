@@ -173,6 +173,15 @@ SegmentEntry &SegmentArray::firstExeSegment() {
 	return (*this)[idx];
 }
 
+SegmentEntry &SegmentArray::dataSegment() {
+	SegmentEntry &lastSeg = (*this)[size() - 1];
+	if (lastSeg.isDataSegment)
+		return lastSeg;
+
+	printf("Couldn't find data segment\n");
+	exit(0);
+}
+
 /*--------------------------------------------------------------------------
  * Support functions
  *
@@ -705,8 +714,9 @@ void processExecutable() {
 	// Write out the data between the end of the thunk methods and the start of
 	// the data for the first rtlink segment following it
 	SegmentEntry &firstExeSeg = segmentList.firstExeSegment();
+	SegmentEntry &dataSeg = segmentList.dataSegment();
 	copyBytes(firstExeSeg.headerOffset - fExe.pos());
-
+uint maxSeg = 0; //**DEBUG**
 	// Iterate through writing the code for each rtlink segment in turn
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &se = segmentList[segmentNum];
@@ -728,8 +738,14 @@ void processExecutable() {
 			fOut.seek(fileOffset);
 			uint selector = fOut.readWord();
 
-			if (selector >= se.loadSegment) {
+			if (selector >= se.loadSegment && selector < (se.loadSegment + se.codeSize / 16)) {
 				int selectorDiff = selector - se.loadSegment;
+				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+
+				fOut.seek(-2, SEEK_CUR);
+				fOut.writeWord(newSelector);
+			} else if (selector >= dataSeg.loadSegment) {
+				int selectorDiff = selector - dataSeg.loadSegment;
 				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
 
 				fOut.seek(-2, SEEK_CUR);
