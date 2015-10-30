@@ -111,10 +111,17 @@ uint outputCodeOffset, outputDataOffset;
 *--------------------------------------------------------------------------*/
 
 /**
+ * Translates the relocation entry to a relative file offset
+ */
+uint RelocationEntry::relativeOffset() const {
+	return ((_value >> 16) << 4) + (_value & 0xffff);
+}
+
+/**
  * Translates the relocation entry to a file offset
  */
 uint RelocationEntry::fileOffset() const {
-	return codeOffset + ((_value >> 16) << 4) + (_value & 0xffff);
+	return codeOffset + relativeOffset();
 }
 
 /**
@@ -316,10 +323,18 @@ bool validateExecutable() {
 	if (scanExecutable((const byte *)RTLinkStr, RTLINK_STR_SIZE) == -1) {
 		printf("RTLink(R)/Plus identifier not found in specified executable\n");
 		return false;
-	} else {
-		printf("Found RTLink(R)/Plus identifier in executable\n");
-		return true;
 	}
+	printf("Found RTLink(R)/Plus identifier in executable\n");
+
+	// Some earlier versions of RTLink use an alternate arrangement with an external
+	// rtlinkst.com and some juggling around of stuff in memory that I haven't figured
+	// out yet. Such programs are identifiable by having no relocation entries
+	if (numRelocations == 0) {
+		printf("Old style rtlinkst.com usage detected. This format not supported\n");
+		return false;
+	}
+
+	return true;
 }
 
 /**
@@ -443,15 +458,18 @@ bool loadSegmentList() {
 	// segment segment in the executable will come list
 	segmentList.sort();
 
-	// Finally, move backwards from the start of the segments list to find a word with a relocation
-	// entry in the executable's relocations list. We can use the segment of this to tell us the
-	// the RTLink segment, which we'll need later to create new relocation offsets for all the thunks
-	int relocIndex;
-	while ((relocIndex = relocations.indexOf(firstSegmentOffset)) == -1) {
-		--firstSegmentOffset;
-		assert(firstSegmentOffset >= 0);
+	// Scan through all the list of relocations to find the one with the file offset closest
+	// to the start of the segments list. This will give us the program segment the segment
+	// list is located in
+	uint highestIndex = 0, highestOffset = 0;
+	for (uint idx = 0; idx < relocations.size(); ++idx) {
+		if (relocations[idx].fileOffset() > highestOffset) {
+			highestIndex = idx;
+			highestOffset = relocations[idx].fileOffset();
+		}
 	}
-	rtlinkSegment = relocations[relocIndex].getSegment();
+
+	rtlinkSegment = relocations[highestIndex].getSegment();
 	rtlinkSegmentStart = codeOffset + rtlinkSegment * 16;
 
 	return true;
@@ -594,9 +612,9 @@ void updateRelocationEntries() {
 	for (int idx = (int)dataSeg.relocations.size() - 1; idx >= 0; --idx) {
 		RelocationEntry &re = dataSeg.relocations[idx];
 		
-		// Figure out the file position the relocation entry points to (with adjustment
-		// relative to the start of the data segment), and read in the segment selector
-		uint fileOffset = re.fileOffset() + (dataSeg.codeOffset - codeOffset);
+		// Figure out the file position the relocation entry points to within the
+		// data segment, and read in the segment selector
+		uint fileOffset = dataSeg.codeOffset + re.relativeOffset();
 		fExe.seek(fileOffset);
 		uint selector = fExe.readWord();
 
@@ -673,7 +691,7 @@ void processExecutable() {
 			if (segs[s] == 0 || segs[s] == startSeg)
 				segs[s] = startSeg;
 			else {
-				printf("%x", segs[s]);
+				//printf("%x", segs[s]);
 			}
 		}
 	}
@@ -739,7 +757,7 @@ void processExecutable() {
 	SegmentEntry &firstExeSeg = segmentList.firstExeSegment();
 	SegmentEntry &dataSeg = segmentList.dataSegment();
 	copyBytes(firstExeSeg.headerOffset - fExe.pos());
-uint maxSeg = 0; //**DEBUG**
+
 	// Iterate through writing the code for each rtlink segment in turn
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &se = segmentList[segmentNum];
@@ -831,7 +849,7 @@ uint maxSeg = 0; //**DEBUG**
 				segs[selector] = selector;
 			}
 			else {
-				printf("%x", segs[selector]); //**DEBUG**
+//				printf("%x", segs[selector]); //**DEBUG**
 			}
 		}
 	}

@@ -61,6 +61,8 @@ struct RelocationEntry {
 
 	void addSegment(uint16 seg);
 
+	uint relativeOffset() const;
+
 	uint fileOffset() const;
 
 	operator uint() const { return _value; }
