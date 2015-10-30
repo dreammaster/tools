@@ -421,7 +421,9 @@ bool loadSegmentList() {
 			assert(segmentVal >= seg.loadSegment);
 
 			++extraRelocations;
-			seg.relocations.push_back(RelocationEntry(segmentVal - seg.loadSegment, offsetVal));
+			RelocationEntry relEntry(segmentVal - seg.loadSegment, offsetVal);
+			relEntry._segmentIndex = segmentNum;
+			seg.relocations.push_back(relEntry);
 		}
 
 		// Sort the list of relocations into relative order
@@ -565,10 +567,11 @@ void updateRelocationEntries() {
 	// points within the same area of memory allocated for loading them, so if we left
 	// them in place, we could end up with confusion about how big each segment is
 	for (int idx = (int)relocations.size() - 1; idx >= 0; --idx) {
-		if (relocations[idx].fileOffset() >= segmentsOffset &&
-			relocations[idx].fileOffset() < (segmentsOffset + segmentsSize))
+		RelocationEntry &re = relocations[idx];
+		if (re.fileOffset() >= segmentsOffset && re.fileOffset() < (segmentsOffset + segmentsSize))
 			relocations.remove_at(idx);
 	}
+
 	originalRelocationCount = relocations.size();
 
 	// Figure out the code start in the new executable, allowing enough room to put
@@ -643,8 +646,6 @@ void processExecutable() {
 		}
 	}
 
-
-
 	assert(relocOffset % 2 == 0);
 	uint16 *header = new uint16[relocOffset / 2];
 
@@ -685,6 +686,7 @@ void processExecutable() {
 	for (uint idx = 0; idx < jumpList.size(); ++idx) {
 		JumpEntry &je = jumpList[idx];
 		SegmentEntry &segEntry = segmentList[je.segmentIndex];
+		uint newSelector = je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16;
 
 		// Copy over the call to the rtlink load method, and the opcode
 		// byte for the following FAR JMP instruction
@@ -692,7 +694,7 @@ void processExecutable() {
 
 		// Write out the new JMP
 		fOut.writeWord(je.offsetInSegment);
-		fOut.writeWord(je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16);
+		fOut.writeWord(newSelector);
 		fExe.skip(4);
 
 		// Nop out the segment number at the end of the thunk method
@@ -706,14 +708,37 @@ void processExecutable() {
 	copyBytes(firstExeSeg.headerOffset - fExe.pos());
 
 	// Iterate through writing the code for each rtlink segment in turn
-	for (uint idx = 0; idx < segmentList.size(); ++idx) {
-		SegmentEntry &se = segmentList[idx];
+	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
+		SegmentEntry &se = segmentList[segmentNum];
 
-		// Write out the dynamic segment
+		// Write out the segment's data
 		assert(fOut.pos() == se.outputCodeOffset);
 		File *file = se.isExecutable ? &fExe : &fOvl;
 		file->seek(se.codeOffset);
 		copyBytes(se.codeSize, file);
+
+		// iterate through the relocations for the segment and adjust the segment
+		// values that the entries point to
+		for (uint idx = 0; idx < relocations.size(); ++idx) {
+			RelocationEntry &re = relocations[idx];
+			if (re._segmentIndex != segmentNum)
+				continue;
+
+			uint fileOffset = (outputCodeOffset - codeOffset) + re.fileOffset();
+			fOut.seek(fileOffset);
+			uint selector = fOut.readWord();
+
+			if (selector >= se.loadSegment) {
+				int selectorDiff = selector - se.loadSegment;
+				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+
+				fOut.seek(-2, SEEK_CUR);
+				fOut.writeWord(newSelector);
+			}
+		}
+
+		// Move to the end of the output file, ready to write the next segment
+		fOut.seek(0, SEEK_END);
 	}
 
 	// Do a final iteration across all the relocation entries from the original
@@ -747,21 +772,28 @@ void processExecutable() {
 				int selectorDiff = selector - se.loadSegment;
 				assert(selectorDiff >= 0);
 				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
-selector = newSelector;
 				fOut.seek(-2, SEEK_CUR);
 				fOut.writeWord(newSelector);
 				break;
 			}
 		}
+	}
 
-if (segs[selector] != selector) {
-	if (segs[selector] == 0) {
-		segs[selector] = selector;
-	}
-	else {
-		printf("%x", segs[selector]); //**DEBUG**
-	}
-}
+	//***DEBUG****
+	for (uint idx = 0; idx < relocations.size(); ++idx) {
+		RelocationEntry &re = relocations[idx];
+
+		fOut.seek((outputCodeOffset - codeOffset) + re.fileOffset());
+		uint selector = fOut.readWord();
+
+		if (segs[selector] != selector) {
+			if (segs[selector] == 0) {
+				segs[selector] = selector;
+			}
+			else {
+				printf("%x", segs[selector]); //**DEBUG**
+			}
+		}
 	}
 
 	fOut.seek(0, SEEK_END);

@@ -52,10 +52,12 @@ struct JumpEntry {
 
 struct RelocationEntry {
 	uint32 _value;
+	int _segmentIndex;
 
-	RelocationEntry(uint32 v) : _value(v) {}
+	RelocationEntry(uint32 v) : _value(v), _segmentIndex(-1) {}
 
-	RelocationEntry(uint16 seg, uint16 ofs) : _value(((uint32)seg << 16) + ofs) {}
+	RelocationEntry(uint16 seg, uint16 ofs) : _value(((uint32)seg << 16) + ofs),
+		_segmentIndex(-1) {}
 
 	void addSegment(uint16 seg);
 
