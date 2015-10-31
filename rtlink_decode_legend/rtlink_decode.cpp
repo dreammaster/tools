@@ -495,8 +495,8 @@ bool loadSegmentListV2() {
 	for (int offset = 0, segmentNum = 2; READ_LE_UINT16(buffer + offset + 14) == segmentNum;
 			++segmentNum, offset += 32) {
 		segmentsSize = (offset + 32) - segmentsOffset;
-		segmentList.insert_at(0, SegmentEntry());
-		SegmentEntry &seg = segmentList[0];
+		segmentList.push_back(SegmentEntry());
+		SegmentEntry &seg = segmentList[segmentList.size() - 1];
 		byte *p = buffer + offset;
 
 		// Get data for the entry
@@ -506,10 +506,9 @@ bool loadSegmentListV2() {
 		seg.filenameOffset = 0;
 		seg.isExecutable = true;
 		seg.headerOffset = READ_LE_UINT32(p + 8);
-		seg.numRelocations = READ_LE_UINT16(p + 4);
-		seg.codeOffset = seg.headerOffset + (((seg.numRelocations + 3) >> 2) << 4);
+		seg.numRelocations = 0;
+		seg.codeOffset = 0;
 		seg.codeSize = 0;		// todo
-		assert((seg.codeSize % 16) == 0);
 	}
 
 	// Iterate through the list to load the relocation entries from the start of that segment's data
@@ -517,21 +516,30 @@ bool loadSegmentListV2() {
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
 		SegmentEntry &seg = segmentList[segmentNum];
 
-		// Move to the start of the segment
+		// Move to the start of the segment and read in it's details
 		fExe.seek(seg.headerOffset);
+		uint segmentParagraphs = fExe.readWord();
+		uint headerParagraphs = fExe.readWord();
+		fExe.readWord();
+		uint16 relocationStart = fExe.readWord();
+		seg.numRelocations = fExe.readWord();
+
+		// Set the code file offset and size for the segment
+		seg.codeOffset = seg.headerOffset + headerParagraphs * 16;
+		seg.codeSize = (segmentParagraphs - headerParagraphs) * 16;
+		assert((seg.codeSize % 16) == 0);
 
 		// Get the list of relocations
+		assert(relocationStart == 0);
+		fExe.seek(6 + relocationStart * 4, SEEK_CUR);
+
 		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr) {
 			uint offsetVal = fExe.readWord();
 			uint segmentVal = fExe.readWord();
-			if (segmentVal == 0xffff && offsetVal == 0)
-				continue;
-
-			assert((offsetVal != 0) || (segmentVal != 0));
-			assert(segmentVal >= seg.loadSegment);
+			assert((segmentVal * 16 + offsetVal) < seg.codeSize);
 
 			++extraRelocations;
-			RelocationEntry relEntry(segmentVal - seg.loadSegment, offsetVal);
+			RelocationEntry relEntry(segmentVal, offsetVal);
 			relEntry._segmentIndex = segmentNum;
 			seg.relocations.push_back(relEntry);
 		}
