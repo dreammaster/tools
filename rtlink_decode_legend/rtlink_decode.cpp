@@ -20,46 +20,6 @@
 *
 */
 
-/**
- * Okay, here's how the version of RTLink that this version targets works:
- * One of the segments early in the executable will be a "RTLink segment".
- * It contains three areas that are of interest to us:
- * 1) A list of dynamic segments that the program includes.
- * 2) An intermediate area containing the filenames of the files dynamic segments
- * come from. I'm currently only familiar with there being the name of the EXE itself,
- * as well as an optional OVL filename.
- * 3) The list of "thunks" stub methods which are used to call methods in dynamic segments.
- *
- * Segment List
- * ============
- * The segment list is a set of segment records, each 18 bytes long. Each consist of:
- * memorySegment	word	The segment in memory to load the segment to
- * filename			word	The offset within the same segment for the filename
- *							specifying the file containing the segment (EXE or OVL)
- * fileOffset		3 bytes	The offset within the file in paragraphs (ie multiply by 16)
- * flags			1 byte
- * unknown1			word
- * numRelocations	word	Specifies the number of relocation entries at the start of
- *		the segment in the file; these specify the offsets within the segment where
- *		segment values that need to be adjusted to the loaded position in memory
- * unknown2			word
- * segmentNum		word	An incrementing segment number
- * numParagraphs	word	The number of paragraphs (size * 16) of the code block
- *		following the relocation list for the segment in the file
- *
- * Thunk List
- * ==========
- * The thunk list is a set of stub methods. Each of them consist of the following:
- * A call instruction to a method that handles loading the correct dynamic segment.
- *		This version expects the call to be to a near method. The other version
- *		of the tool, rtlink_decode_mads, handles a version that uses far calls
- * A far jump to the correct offset within the loaded dynamic segment. The segment
- *		specified may not necessarily be the same as the loaded dynamic segment,
- *		since the loaded rtlink segment may contain several sub-segments
- * A word containing the rtlink segment to load. This is used by the rtlink segment
- *		loader, to know which segment it is meant to load
- */
-
 // HACK to allow building with the SDL backend on MinGW
 // see bug #1800764 "TOOLS: MinGW tools building broken"
 #ifdef main
@@ -83,6 +43,7 @@ void error(char const *s, ...) {
 	exit(1);
 }
 
+RTLinkVersion rtlinkVersion;
 File fExe, fOvl, fOut;
 char exeFilename[MAX_FILENAME_SIZE];
 char ovlFilename[MAX_FILENAME_SIZE];
@@ -323,27 +284,42 @@ bool validateExecutable() {
 		relocations.push_back(fExe.readLong());
 
 	// Check for the RTLink string
-	if (scanExecutable((const byte *)RTLinkStr, RTLINK_STR_SIZE) == -1) {
+	int stringOffset = scanExecutable((const byte *)RTLinkStr, RTLINK_STR_SIZE);
+	if (stringOffset == -1) {
 		printf("RTLink(R)/Plus identifier not found in specified executable\n");
 		return false;
 	}
 	printf("Found RTLink(R)/Plus identifier in executable\n");
 
-	// Some earlier versions of RTLink use an alternate arrangement with an external
-	// rtlinkst.com and some juggling around of stuff in memory that I haven't figured
-	// out yet. Such programs are identifiable by having no relocation entries
+	// Detect the version of RTLink in use
+	
+	// Version 3 is easily identifiable by the overall executable having no
+	// relocation entries
 	if (numRelocations == 0) {
-		printf("Old style rtlinkst.com usage detected. This format not supported\n");
+		rtlinkVersion = VERSION3;
+		printf("Version 3 - rtlinkst.com usage detected. This format not supported\n");
 		return false;
 	}
 
+	// Version 2 has a longer string version of RTLink/Plus
+	const char *V2_STRING = "RTLink(R)/Plus run-time code.\r\n";
+	if (scanExecutable((const byte *)V2_STRING, strlen(V2_STRING)) != -1) {
+		rtlinkVersion = VERSION2;
+		printf("Version 2 of RTLink detected\n");
+		return true;
+	}
+
+	rtlinkVersion = VERSION1;
+	printf("Version 1 of RTLink presumed\n");
 	return true;
 }
 
 /**
- * Loads the list of dynamic segments from the executable
+ * Loads the list of dynamic segments from version 1 executables. For these,
+ * we find an occurance of the program's own filename, which is used by the
+ * segment list, and work backwards to load in all the segments.
  */
-bool loadSegmentList() {
+bool loadSegmentListV1() {
 	byte buffer[LARGE_BUFFER_SIZE];
 	int dataIndex = 0;
 
@@ -474,6 +450,99 @@ bool loadSegmentList() {
 
 	rtlinkSegment = relocations[highestIndex].getSegment();
 	rtlinkSegmentStart = codeOffset + rtlinkSegment * 16;
+
+	return true;
+}
+
+/**
+* Loads the list of dynamic segments from version 2 executables. In version 2
+* executables, there'll be a relocation entry at the very start of the segment,
+* following by the segment list.
+*/
+bool loadSegmentListV2() {
+	byte buffer[LARGE_BUFFER_SIZE];
+	int dataIndex = 0;
+	segmentsOffset = 0;
+
+	// Iterate through the relocations looking for one with a 0 offset
+	for (uint relIndex = 0; relIndex < relocations.size(); ++relIndex) {
+		if (relocations[relIndex].getOffset() != 0)
+			continue;
+
+		// Read in data from the segment
+		uint fileOffset = relocations[relIndex].fileOffset() + 48;
+		fExe.seek(fileOffset);
+		fExe.read(buffer, LARGE_BUFFER_SIZE);
+
+		// Check to see if the segment number values we'd expect for the first two
+		// segment entries are 2 and 3
+		uint num1 = READ_LE_UINT16(buffer + 14);
+		uint num2 = READ_LE_UINT16(buffer + 32 + 14);
+		if (num1 == 2 && num2 == 3) {
+			segmentsOffset = fileOffset;
+			rtlinkSegment = relocations[relIndex].getSegment();
+			rtlinkSegmentStart = fileOffset - 48;
+			break;
+		}
+	}
+
+	if (segmentsOffset == 0) {
+		printf("Could not find the executable's segment list\n");
+		return false;
+	}
+
+	// Iterate through the segments
+	for (int offset = 0, segmentNum = 2; READ_LE_UINT16(buffer + offset + 14) == segmentNum;
+			++segmentNum, offset += 32) {
+		segmentsSize = (offset + 32) - segmentsOffset;
+		segmentList.insert_at(0, SegmentEntry());
+		SegmentEntry &seg = segmentList[0];
+		byte *p = buffer + offset;
+
+		// Get data for the entry
+		seg.segmentIndex = segmentNum;
+		seg.offset = segmentsOffset + offset;
+		seg.loadSegment = READ_LE_UINT16(p);
+		seg.filenameOffset = 0;
+		seg.isExecutable = true;
+		seg.headerOffset = READ_LE_UINT32(p + 8);
+		seg.numRelocations = READ_LE_UINT16(p + 4);
+		seg.codeOffset = seg.headerOffset + (((seg.numRelocations + 3) >> 2) << 4);
+		seg.codeSize = 0;		// todo
+		assert((seg.codeSize % 16) == 0);
+	}
+
+	// Iterate through the list to load the relocation entries from the start of that segment's data
+	extraRelocations = 0;
+	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
+		SegmentEntry &seg = segmentList[segmentNum];
+
+		// Move to the start of the segment
+		fExe.seek(seg.headerOffset);
+
+		// Get the list of relocations
+		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr) {
+			uint offsetVal = fExe.readWord();
+			uint segmentVal = fExe.readWord();
+			if (segmentVal == 0xffff && offsetVal == 0)
+				continue;
+
+			assert((offsetVal != 0) || (segmentVal != 0));
+			assert(segmentVal >= seg.loadSegment);
+
+			++extraRelocations;
+			RelocationEntry relEntry(segmentVal - seg.loadSegment, offsetVal);
+			relEntry._segmentIndex = segmentNum;
+			seg.relocations.push_back(relEntry);
+		}
+
+		// Sort the list of relocations into relative order
+		seg.relocations.sort();
+	}
+
+	// Sort the list so that any segments in the Ovl come first. This helps ensure the data
+	// segment segment in the executable will come list
+	segmentList.sort();
 
 	return true;
 }
@@ -881,8 +950,13 @@ int main(int argc, char *argv[]) {
 	if (!validateExecutable())
 		close();
 
-	if (!loadSegmentList())
-		close();
+	if (rtlinkVersion == VERSION1) {
+		if (!loadSegmentListV1())
+			close();
+	} else {
+		if (!loadSegmentListV2())
+			close();
+	}
 
 	if (!loadJumpList())
 		close();
