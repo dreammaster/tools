@@ -215,7 +215,7 @@ int scanExecutable(const byte *data, int count) {
 	assert(count < BUFFER_SIZE);
 
 	fExe.seek(0);
-	do {
+	for (;;) {
 		int fileOffset = fExe.pos();
 		fExe.read(buffer, BUFFER_SIZE);
 
@@ -226,10 +226,13 @@ int scanExecutable(const byte *data, int count) {
 			return offset;
 		}
 
+		if (fExe.eof())
+			break;
+
 		// Move slightly backwards in the file before the next iteration and read,
 		// just in case the sequence we're looking for falls across the buffer boundary
-		fExe.seek(-(BUFFER_SIZE - 1), SEEK_CUR);
-	} while (!fExe.eof());
+		fExe.seek(-count, SEEK_CUR);
+	}
 
 	return -1;
 }
