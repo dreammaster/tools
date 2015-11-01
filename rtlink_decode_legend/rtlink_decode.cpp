@@ -636,7 +636,7 @@ bool loadJumpList() {
 					fExe.seek(-2, SEEK_CUR);
 				} else {
 					// Get the offset and byte from following instruction
-					segment = byteVal | (byteVal2 << 8);
+					//segment = byteVal | (byteVal2 << 8);
 
 					byteVal = byteVal3;
 				}
@@ -851,7 +851,7 @@ void processExecutable() {
 			if (segs[s] == 0 || segs[s] == startSeg)
 				segs[s] = startSeg;
 			else {
-				//printf("%x", segs[s]);
+//				printf("%x", segs[s]);
 			}
 		}
 	}
@@ -951,7 +951,9 @@ void processExecutable() {
 			fOut.seek(fileOffset);
 			uint selector = fOut.readWord();
 
-			if (selector >= se.loadSegment && selector < (se.loadSegment + se.codeSize / 16)) {
+			if (rtlinkVersion == VERSION2) {
+				// No processing needed
+			} else if (selector >= se.loadSegment && selector < (se.loadSegment + se.codeSize / 16)) {
 				int selectorDiff = selector - se.loadSegment;
 				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
 
