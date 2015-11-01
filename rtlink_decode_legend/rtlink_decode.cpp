@@ -684,12 +684,36 @@ bool loadDataDetails() {
 		}
 	}
 
-	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
-	if (segmentOvlCount > 0 && segmentExeCount != 1) {
-		printf("Warning.. multiple segments found in Exe. Presuming last is data segment(s)\n");
-	} else if (lastSeg.isExecutable) {
+	if (rtlinkVersion == VERSION1) {
+		// Last RTLink segment is presumed to contain the data segment
+		SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
+		if (segmentOvlCount > 0 && segmentExeCount != 1) {
+			printf("Warning.. multiple segments found in Exe. Presuming last is data segment(s)\n");
+		}
+
+		assert(lastSeg.isExecutable);
 		lastSeg.isDataSegment = true;
+	} else {
+		// Version 2 RTLINK executables have the data segment at end of the
+		// static part of the executable, before all the RTLink segments
+		const char *MS_RUNTIME = "MS Run-Time";
+		int fileOffset = scanExecutable((const byte *)MS_RUNTIME, strlen(MS_RUNTIME));
+		if (fileOffset == -1) {
+			printf("Could not locate data segment. Maybe not using MS Run-Time?\n");
+			return false;
+		}
+		fileOffset -= 8;
+
+		// Set up a new dummy segment in the segment list for the data segment
+		SegmentEntry seg;
+		seg.isExecutable = seg.isDataSegment = true;
+		seg.headerOffset = seg.codeOffset = fileOffset;
+		seg.codeSize = segmentList[0].headerOffset - fileOffset;
+		seg.loadSegment = (fileOffset - codeOffset) / 16;
+
+		segmentList.push_back(seg);
 	}
+
 	return true;
 }
 
