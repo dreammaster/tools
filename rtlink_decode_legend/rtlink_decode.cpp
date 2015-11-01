@@ -134,11 +134,15 @@ void SegmentArray::sort() {
 }
 
 SegmentEntry &SegmentArray::firstExeSegment() {
-	uint idx = 0;
-	while (idx < size() && !(*this)[idx].isExecutable)
-		++idx;
+	uint lowestIndex = 0, lowestOffset = 0xfffffff;
+	for (uint idx = 0; idx < size(); ++idx) {
+		if ((*this)[idx].isExecutable && (*this)[idx].codeOffset < lowestOffset) {
+			lowestIndex = idx;
+			lowestOffset = (*this)[idx].codeOffset;
+		}
+	}
 	
-	return (*this)[idx];
+	return (*this)[lowestIndex];
 }
 
 SegmentEntry &SegmentArray::dataSegment() {
