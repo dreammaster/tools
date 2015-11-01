@@ -127,7 +127,7 @@ enum AccessMode {
 
 struct JumpEntry {
 	uint32 fileOffset;
-	uint16 segmentIndex;
+	int segmentIndex;
 	uint16 segmentOffset;
 	uint16 offsetInSegment;
 };

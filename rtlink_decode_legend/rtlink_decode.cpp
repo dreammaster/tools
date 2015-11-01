@@ -613,10 +613,10 @@ bool loadJumpList() {
 		int segmentIndex;
 
 		if (rtlinkVersion == VERSION2) {
-			// For Rex Nebular at least, there can be some variation in the number
-			// of padding bytes betwen method. And also there are some stub methods 
-			// that don't seem to be called, and don't have a following segment index.
-			// These may be methods that were optimized out of the final executable
+			// In Version 2 games, the jump stubs are intermingled with some
+			// method stubs for methods which reside in the static part of 
+			// the executable and shouldn't need method stubs to begin with.
+			// Hence all the funky tests down below.
 			byteVal = fExe.readByte();
 
 			if ((segment != 0) || (byteVal == 0x9a)) {
@@ -645,18 +645,14 @@ bool loadJumpList() {
 			segmentIndex = fExe.readWord();
 		}
 
-		if (segmentIndex != -1) {
-			assert((uint)segmentIndex < segmentList.size());
-			SegmentEntry &segEntry = segmentList[segmentIndex];
-			JumpEntry rec;
+		JumpEntry rec;
 
-			rec.fileOffset = fileOffset;
-			rec.segmentIndex = segmentIndex;
-			rec.segmentOffset = (rtlinkVersion == VERSION2) ? segment : segment - segEntry.loadSegment;
-			rec.offsetInSegment = offsetInSegment;
-
-			jumpList.push_back(rec);
-		}
+		rec.fileOffset = fileOffset;
+		rec.segmentIndex = segmentIndex;
+		rec.segmentOffset = (rtlinkVersion == VERSION2) ? segment : 
+			segment - segmentList[segmentIndex].loadSegment;
+		rec.offsetInSegment = offsetInSegment;
+		jumpList.push_back(rec);
 
 		// If the next byte is 0, scan forward to see if the list resumes
 		if (rtlinkVersion == VERSION1)
@@ -899,21 +895,33 @@ void processExecutable() {
 	// Loop through handling the jump methods
 	for (uint idx = 0; idx < jumpList.size(); ++idx) {
 		JumpEntry &je = jumpList[idx];
-		SegmentEntry &segEntry = segmentList[je.segmentIndex];
-		uint newSelector = je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16;
+		uint newSelector;
 
-		// Copy over the call to the rtlink load method, and the opcode
-		// byte for the following FAR JMP instruction
-		copyBytes(4);
+		if (je.segmentIndex == -1) {
+			// No segment translation needed
+			newSelector = je.segmentOffset;
+		} else {
+			// Set up a selector for the method jump which will be relative
+			// to where the segment is located in the output executable
+			SegmentEntry &segEntry = segmentList[je.segmentIndex];
+			newSelector = je.segmentOffset + (segEntry.outputCodeOffset - outputCodeOffset) / 16;
+		}
+
+		// In case there's any flotsam at the end of any previous jump table
+		// entry, write over null bytes to the output
+		uint bytesDiff = je.fileOffset - fExe.pos();
+		copyBytes(bytesDiff);
+
+		// Copy over the call to the rtlink load method
+		copyBytes((rtlinkVersion == VERSION2) ? 5 : 3);
+
+		// And the byte for the following FAR JMP instruction
+		copyBytes(1);
 
 		// Write out the new JMP
 		fOut.writeWord(je.offsetInSegment);
 		fOut.writeWord(newSelector);
 		fExe.skip(4);
-
-		// Nop out the segment number at the end of the thunk method
-		fOut.writeByte(0x90, 2);
-		fExe.skip(2);
 	}
 
 	// Write out the data between the end of the thunk methods and the start of
