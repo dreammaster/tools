@@ -634,7 +634,7 @@ bool loadJumpList() {
 					fExe.seek(-2, SEEK_CUR);
 				} else {
 					// Get the offset and byte from following instruction
-					//segment = byteVal | (byteVal2 << 8);
+					segment = byteVal | (byteVal2 << 8);
 
 					byteVal = byteVal3;
 				}
