@@ -560,28 +560,43 @@ bool loadSegmentListV2() {
  */
 bool loadJumpList() {
 	byte byteVal;
+	byte callByte;
 
-	// After the filename (which is used by an earlier segment list), there may be 
-	// another ASCII filename for an overlay file, and then after that the thunk list.
-	// So if we get any kind of low value, then something's screwed up
-	fExe.seek(exeNameOffset);
-	while ((byteVal = fExe.readByte()) != 0xE8) {
-		if (byteVal > 0 && byteVal < 32) {
+	if (rtlinkVersion == VERSION1) {
+		// After the filename (which is used by an earlier segment list), there may be 
+		// another ASCII filename for an overlay file, and then after that the thunk list.
+		// So if we get any kind of low value, then something's screwed up
+		fExe.seek(exeNameOffset);
+		callByte = 0xE8;
+
+		// Scan forward to following start of thunk methods
+		while ((byteVal = fExe.readByte()) != callByte) {
+			if (byteVal > 0 && byteVal < 32) {
+				printf("Couldn't resolve jump list\n");
+				return false;
+			}
+		}
+	} else {
+		const char *EnterDirStr = "Enter directory for $";
+		int fileOffset = scanExecutable((const byte *)EnterDirStr, strlen(EnterDirStr));
+		if (fileOffset == -1) {
 			printf("Couldn't resolve jump list\n");
 			return false;
-		} else if (byteVal == 0xea) {
-			printf("RTLINK thunks in this game are using FAR calls. Try using rtlink_decode_mads\n");
-			return false;
 		}
+		callByte = 0x9a;
+
+		// Scan forward to following start of thunk methods
+		while (!fExe.eof() && ((byteVal = fExe.readByte()) != 0x9A));
 	}
+
 	jumpOffset = fExe.pos() - 1;
 	
 	// Iterate through the list of method thunks
-	while (!fExe.eof() && (byteVal == 0xE8)) {
+	while (!fExe.eof() && (byteVal == callByte)) {
 		uint32 fileOffset = fExe.pos() - 1;
 
-		// Skip over the offset for the thunk call that loads the dynamic segment
-		fExe.readWord();
+		// Skip over the ther operands for the thunk call that loads the dynamic segment
+		fExe.skip((rtlinkVersion == VERSION1) ? 2 : 4);
 
 		byte jmpByte = fExe.readByte();
 		if (jmpByte != 0xea)
@@ -591,18 +606,59 @@ bool loadJumpList() {
 		// Skip over offset within dynamic segments to jump to, and get the segment value
 		uint16 offsetInSegment = fExe.readWord();
 		uint16 segment = fExe.readWord();
-		int segmentIndex = fExe.readWord();
+		int segmentIndex;
 
-		SegmentEntry &segEntry = segmentList[segmentIndex];
+		if (rtlinkVersion == VERSION2) {
+			// For Rex Nebular at least, there can be some variation in the number
+			// of padding bytes betwen method. And also there are some stub methods 
+			// that don't seem to be called, and don't have a following segment index.
+			// These may be methods that were optimized out of the final executable
+			byteVal = fExe.readByte();
 
-		JumpEntry rec;
-		rec.fileOffset = fileOffset;
-		rec.segmentIndex = segmentIndex;
-		rec.segmentOffset = segment - segEntry.loadSegment;
-		rec.offsetInSegment = offsetInSegment;
-		jumpList.push_back(rec);
+			if ((segment != 0) || (byteVal == 0x9a)) {
+				segmentIndex = -1;
+			} else {
+				// The following bytes are an alias for segment translation
+				segmentIndex = byteVal | (fExe.readByte() << 8);
+				--segmentIndex;
 
-		byteVal = fExe.readByte();
+				byteVal = fExe.readByte();
+				byte byteVal2 = fExe.readByte();
+				byte byteVal3 = fExe.readByte();
+
+				if ((byteVal == 0x9a) && (byteVal3 != 0x9a)) {
+					// In some rare cases, another jump follows after two bytes - dunno why
+					segmentIndex = -1;
+					fExe.seek(-2, SEEK_CUR);
+				} else {
+					// Get the offset and byte from following instruction
+					segment = byteVal | (byteVal2 << 8);
+
+					byteVal = byteVal3;
+				}
+			}
+		} else {
+			segmentIndex = fExe.readWord();
+		}
+
+		if (segmentIndex != -1) {
+			assert((uint)segmentIndex < segmentList.size());
+			SegmentEntry &segEntry = segmentList[segmentIndex];
+			JumpEntry rec;
+
+			rec.fileOffset = fileOffset;
+			rec.segmentIndex = segmentIndex;
+			rec.segmentOffset = (rtlinkVersion == VERSION2) ? segment : segment - segEntry.loadSegment;
+			rec.offsetInSegment = offsetInSegment;
+
+			jumpList.push_back(rec);
+		}
+
+		// If the next byte is 0, scan forward to see if the list resumes
+		if (rtlinkVersion == VERSION1)
+			byteVal = fExe.readByte();
+		while (byteVal == 0)
+			byteVal = fExe.readByte();
 	}
 
 	jumpSize = fExe.pos() - jumpOffset - 1;
