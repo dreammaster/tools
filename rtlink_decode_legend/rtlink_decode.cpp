@@ -631,8 +631,6 @@ bool loadJumpList() {
 				byte byteVal3 = fExe.readByte();
 
 				if ((byteVal == 0x9a) && (byteVal3 != 0x9a)) {
-					// In some rare cases, another jump follows after two bytes - dunno why
-					segmentIndex = -1;
 					fExe.seek(-2, SEEK_CUR);
 				} else {
 					// Get the offset and byte from following instruction
