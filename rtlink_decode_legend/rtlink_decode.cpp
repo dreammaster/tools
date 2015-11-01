@@ -756,8 +756,21 @@ void updateRelocationEntries() {
 	// them in place, we could end up with confusion about how big each segment is
 	for (int idx = (int)relocations.size() - 1; idx >= 0; --idx) {
 		RelocationEntry &re = relocations[idx];
+		uint fileOffset = re.fileOffset();
 		if (re.fileOffset() >= segmentsOffset && re.fileOffset() < (segmentsOffset + segmentsSize))
 			relocations.remove_at(idx);
+	}
+
+	// Add in relocation entries for the jumps into the dynamic segments
+	if (rtlinkVersion == VERSION2) {
+		for (uint idx = 0; idx < jumpList.size(); ++idx) {
+			int relocIndex = relocations.indexOf(jumpList[idx].fileOffset + 3);
+			if (jumpList[idx].segmentIndex >= 0 && relocIndex != -1) {
+				RelocationEntry &re = relocations[relocIndex];
+				relocations.push_back(RelocationEntry(re.getSegment(), 
+					re.getOffset() + 5));
+			}
+		}
 	}
 
 	originalRelocationCount = relocations.size();
@@ -804,7 +817,7 @@ void updateRelocationEntries() {
 		// Set where each will go in the new EXE
 		se.outputCodeOffset = outputOffset;
 		outputOffset += se.codeSize;
-		
+
 		// Iterate through the dynamic relocation entries for the segment and add them in
 		uint baseSegment = (se.outputCodeOffset - outputCodeOffset) >> 4;
 		for (uint idx = 0; idx < se.relocations.size(); ++idx) {
@@ -812,6 +825,7 @@ void updateRelocationEntries() {
 			relocations[relocations.size() - 1].addSegment(baseSegment);
 		}
 	}
+	extraRelocations = 0;
 
 	// Process the original set of relocation entries. Any relocation entries
 	// that were pointing into rtlink segments in the executable (i.e. data
@@ -1022,8 +1036,7 @@ void processExecutable() {
 		if (segs[selector] != selector) {
 			if (segs[selector] == 0) {
 				segs[selector] = selector;
-			}
-			else {
+			} else {
 //				printf("%x", segs[selector]); //**DEBUG**
 			}
 		}
