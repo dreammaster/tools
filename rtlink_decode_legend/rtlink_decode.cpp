@@ -973,11 +973,7 @@ void processExecutable() {
 	// Do a final iteration across all the relocation entries from the original
 	// executable. If any of them point directly into one of the original Exe
 	// rtlink segments, then adjust them so they they're correctly relative to 
-	// segment's new starting selector in the output file. This may sound weird,
-	// but for Xanth at least, the data segment is part of a single RTlink segment
-	// for the executable, and the selector the relocation entry points to is
-	// already hardcoded for where the data is loaded. Since the segment is in a 
-	// different place in the new Exe, we need to adjust for it
+	// segment's new starting selector in the output file.
 	for (uint idx = 0; idx < originalRelocationCount; ++idx) {
 		RelocationEntry &re = relocations[idx];
 		
@@ -986,7 +982,8 @@ void processExecutable() {
 		if (re.fileOffset() >= jumpOffset && re.fileOffset() < (jumpOffset + jumpSize))
 			continue;
 		
-		fOut.seek((outputCodeOffset - codeOffset) + re.fileOffset());
+		uint fileOffset = (outputCodeOffset - codeOffset) + re.fileOffset();
+		fOut.seek(fileOffset);
 		uint selector = fOut.readWord();
 
 		for (int segmentNum = segmentList.size() - 1; segmentNum >= 0; --segmentNum) {
@@ -994,9 +991,13 @@ void processExecutable() {
 
 			// Check for mapping into segment. Note that, rarely, original segment references
 			// may also point to unallocated data beyond the end of the file, so if the segment
-			// is flagged as the data segment, don't bother checking against segment ending
-			if (se.isExecutable && selector >= se.loadSegment && (se.isDataSegment ||
-					selector < (se.loadSegment + se.codeSize / 16))) {
+			// is flagged as the data segment, don't bother checking against segment ending.
+			// Also, for version 2 games, I had issues with spurious references getting remapped..
+			// it looks some some rtlink segments load over startup code areas. So to be on the
+			// safe side, for them I only adjust segment mappings into the data segment
+			if (se.isExecutable && selector >= se.loadSegment 
+				&& (se.isDataSegment || selector < (se.loadSegment + se.codeSize / 16)) 
+				&& (se.isDataSegment || rtlinkVersion == VERSION1)) {
 				// Adjust the selector
 				int selectorDiff = selector - se.loadSegment;
 				assert(selectorDiff >= 0);
