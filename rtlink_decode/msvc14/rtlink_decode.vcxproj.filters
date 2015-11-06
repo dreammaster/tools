@@ -2,6 +2,9 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="..\rtlink_decode.cpp" />
+    <ClCompile Include="..\variation1.cpp" />
+    <ClCompile Include="..\variation2.cpp" />
+    <ClCompile Include="..\variation3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\rtlink_decode.h" />

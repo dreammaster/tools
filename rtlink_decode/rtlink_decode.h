@@ -273,4 +273,27 @@ public:
 #define BUFFER_SIZE 1024
 #define LARGE_BUFFER_SIZE 0x1000
 
+extern File fExe, fOvl, fOut;
+extern char exeFilename[MAX_FILENAME_SIZE];
+extern char ovlFilename[MAX_FILENAME_SIZE];
+extern char outputFilename[MAX_FILENAME_SIZE];
+extern uint32 codeOffset, exeNameOffset;
+extern uint32 rtlinkSegmentStart;
+extern uint16 rtlinkSegment;
+
+extern uint16 relocOffset, extraRelocations;
+extern RelocationArray relocations;
+extern uint originalRelocationCount;
+
+extern uint jumpOffset, segmentsOffset;
+extern uint jumpSize, segmentsSize;
+typedef Common::Array<JumpEntry> JumpEntryList;
+extern JumpEntryList jumpList;
+extern SegmentArray segmentList;
+
+extern int scanExecutable(const byte *data, int count);
+extern bool validateExecutableV3();
+extern bool loadSegmentListV1();
+extern bool loadSegmentListV2();
+
 #endif

@@ -12,6 +12,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\rtlink_decode.cpp" />
+    <ClCompile Include="..\variation1.cpp" />
+    <ClCompile Include="..\variation2.cpp" />
+    <ClCompile Include="..\variation3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\rtlink_decode.h" />

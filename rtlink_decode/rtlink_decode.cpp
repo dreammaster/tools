@@ -58,7 +58,6 @@ uint originalRelocationCount;
 
 uint jumpOffset, segmentsOffset;
 uint jumpSize, segmentsSize;
-typedef Common::Array<JumpEntry> JumpEntryList;
 JumpEntryList jumpList;
 SegmentArray segmentList;
 
@@ -300,9 +299,11 @@ bool validateExecutable() {
 	// Version 3 is easily identifiable by the overall executable having no
 	// relocation entries
 	if (numRelocations == 0) {
+		if (!validateExecutableV3())
+			return false;
+
 		rtlinkVersion = VERSION3;
-		printf("Version 3 - rtlinkst.com usage detected. This format not supported\n");
-		return false;
+		return true;
 	}
 
 	// Version 2 has a longer string version of RTLink/Plus
@@ -315,247 +316,6 @@ bool validateExecutable() {
 
 	rtlinkVersion = VERSION1;
 	printf("Version 1 of RTLink presumed\n");
-	return true;
-}
-
-/**
- * Loads the list of dynamic segments from version 1 executables. For these,
- * we find an occurance of the program's own filename, which is used by the
- * segment list, and work backwards to load in all the segments.
- */
-bool loadSegmentListV1() {
-	byte buffer[LARGE_BUFFER_SIZE];
-	int dataIndex = 0;
-
-	exeNameOffset = scanExecutable((const byte *)exeFilename, strlen(exeFilename));
-	if (exeNameOffset == -1) {
-		printf("Could not find the executable's own filename within the file\n");
-		return false;
-	}
-
-	int bufferStart = exeNameOffset - LARGE_BUFFER_SIZE;
-	fExe.seek(bufferStart);
-	fExe.read(buffer, LARGE_BUFFER_SIZE);
-
-	// The segment list is a set of entries 18 bytes, bytes 14 & 15 of which are the segment number,
-	// which should be in incrementing values. As such, we need to scan backwards through the loaded
-	// buffer until we find decrementing values two bytes wide at intervals of 18 bytes aparat
-	int offset;
-	bool exeFilenameIsFirst = true;
-	for (offset = LARGE_BUFFER_SIZE - 4; offset >= 18 * 5; --offset) {
-		uint num5 = READ_LE_UINT16(buffer + offset);
-		uint num4 = READ_LE_UINT16(buffer + offset - 18);
-		uint num3 = READ_LE_UINT16(buffer + offset - 18 * 2);
-		uint num2 = READ_LE_UINT16(buffer + offset - 18 * 3);
-		uint num1 = READ_LE_UINT16(buffer + offset - 18 * 4);
-		if (num5 == (num4 + 1) && num4 == (num3 + 1) && num3 == (num2 + 1) && num2 == (num1 + 1)) {
-			// Bonza! We've found the the last entry of the list
-			break;
-		}
-
-		// Check to see if the OVL version of the filename appears between the end of the segment
-		// list and the EXE filename. This is needed to figure out which file each segment is using
-		if (!strncmp((const char *)buffer + offset, ovlFilename, strlen(ovlFilename)))
-			exeFilenameIsFirst = false;
-	}
-	if (offset < (18 * 5)) {
-		printf("Could not find RTLink segment list\n");
-		return false;
-	}
-
-	offset -= 14;
-	uint segmentsEnd = bufferStart + offset + 18;
-
-	// Move backwards through the segment list, loading the entries
-	uint lowestFilenameOffset = 0xffff;
-	uint firstSegmentOffset = 0;
-	for (int segmentNum = READ_LE_UINT16(buffer + offset + 14); 
-			READ_LE_UINT16(buffer + offset + 14) == segmentNum; --segmentNum, offset -= 18) {
-		segmentList.insert_at(0, SegmentEntry());
-		SegmentEntry &seg = segmentList[0];
-		byte *p = buffer + offset;
-
-		// If set, it does some extra indexing that I haven't looked into
-		assert(!(p[7] & 8));
-
-		if (READ_LE_UINT16(buffer + offset + 14) != segmentNum)
-			break;
-
-		// Get data for the entry
-		seg.segmentIndex = segmentNum;
-		seg.offset = bufferStart + offset;
-		seg.loadSegment = READ_LE_UINT16(p);
-		seg.filenameOffset = READ_LE_UINT16(p + 2);
-		seg.headerOffset = (READ_LE_UINT32(p + 4) & 0xffffff) << 4;
-		seg.numRelocations = READ_LE_UINT16(p + 10);
-		seg.codeOffset = seg.headerOffset + (((seg.numRelocations + 3) >> 2) << 4);
-		seg.codeSize = READ_LE_UINT16(p + 16) << 4;
-		assert((seg.codeSize % 16) == 0);
-
-		firstSegmentOffset = seg.offset;
-
-		// Keep track of the highest filename offset. This will be needed to figure 
-		// out which filename to use
-		if (seg.filenameOffset < lowestFilenameOffset)
-			lowestFilenameOffset = seg.filenameOffset;
-	}
-
-	// Set the offset and size for the segment list
-	segmentsOffset = bufferStart + offset + 18;
-	segmentsSize = segmentsEnd - segmentsOffset;
-
-	// Iterate through the list to set whether each segment is using the executable or OVL,
-	// and to load the relocation entries from the start of that segment's data
-	extraRelocations = 0;
-	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
-		SegmentEntry &seg = segmentList[segmentNum];
-
-		// Set executable flag
-		seg.isExecutable = exeFilenameIsFirst == (seg.filenameOffset == lowestFilenameOffset);
-
-		// Get a reference to the correct file, and move to the start of the segment
-		File &file = seg.isExecutable ? fExe : fOvl;
-		file.seek(seg.headerOffset);
-
-		// Get the list of relocations
-		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr) {
-			uint offsetVal = file.readWord();
-			uint segmentVal = file.readWord();
-			if (segmentVal == 0xffff && offsetVal == 0)
-				continue;
-
-			assert((offsetVal != 0) || (segmentVal != 0));
-			assert(segmentVal >= seg.loadSegment);
-
-			++extraRelocations;
-			RelocationEntry relEntry(segmentVal - seg.loadSegment, offsetVal);
-			relEntry._segmentIndex = segmentNum;
-			seg.relocations.push_back(relEntry);
-		}
-
-		// Sort the list of relocations into relative order
-		seg.relocations.sort();
-	}
-
-	// Sort the list so that any segments in the Ovl come first. This helps ensure the data
-	// segment segment in the executable will come list
-	segmentList.sort();
-
-	// Scan through all the list of relocations to find the one with the file offset closest
-	// to the start of the segments list. This will give us the program segment the segment
-	// list is located in
-	uint highestIndex = 0, highestOffset = 0;
-	for (uint idx = 0; idx < relocations.size(); ++idx) {
-		if (relocations[idx].fileOffset() > highestOffset) {
-			highestIndex = idx;
-			highestOffset = relocations[idx].fileOffset();
-		}
-	}
-
-	rtlinkSegment = relocations[highestIndex].getSegment();
-	rtlinkSegmentStart = codeOffset + rtlinkSegment * 16;
-
-	return true;
-}
-
-/**
-* Loads the list of dynamic segments from version 2 executables. In version 2
-* executables, there'll be a relocation entry at the very start of the segment,
-* following by the segment list.
-*/
-bool loadSegmentListV2() {
-	byte buffer[LARGE_BUFFER_SIZE];
-	int dataIndex = 0;
-	segmentsOffset = 0;
-
-	// Iterate through the relocations looking for one with a 0 offset
-	for (uint relIndex = 0; relIndex < relocations.size(); ++relIndex) {
-		if (relocations[relIndex].getOffset() != 0)
-			continue;
-
-		// Read in data from the segment
-		uint fileOffset = relocations[relIndex].fileOffset() + 48;
-		fExe.seek(fileOffset);
-		fExe.read(buffer, LARGE_BUFFER_SIZE);
-
-		// Check to see if the segment number values we'd expect for the first two
-		// segment entries are 2 and 3
-		uint num1 = READ_LE_UINT16(buffer + 14);
-		uint num2 = READ_LE_UINT16(buffer + 32 + 14);
-		if (num1 == 2 && num2 == 3) {
-			segmentsOffset = fileOffset;
-			rtlinkSegment = relocations[relIndex].getSegment();
-			rtlinkSegmentStart = fileOffset - 48;
-			break;
-		}
-	}
-
-	if (segmentsOffset == 0) {
-		printf("Could not find the executable's segment list\n");
-		return false;
-	}
-
-	// Iterate through the segments
-	for (int offset = 0, segmentNum = 2; READ_LE_UINT16(buffer + offset + 14) == segmentNum;
-			++segmentNum, offset += 32) {
-		segmentsSize = (offset + 32) - segmentsOffset;
-		segmentList.push_back(SegmentEntry());
-		SegmentEntry &seg = segmentList[segmentList.size() - 1];
-		byte *p = buffer + offset;
-
-		// Get data for the entry
-		seg.segmentIndex = segmentNum;
-		seg.offset = segmentsOffset + offset;
-		seg.loadSegment = READ_LE_UINT16(p);
-		seg.filenameOffset = 0;
-		seg.isExecutable = true;
-		seg.headerOffset = READ_LE_UINT32(p + 8);
-		seg.numRelocations = 0;
-		seg.codeOffset = 0;
-		seg.codeSize = 0;		// todo
-	}
-
-	// Iterate through the list to load the relocation entries from the start of that segment's data
-	extraRelocations = 0;
-	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
-		SegmentEntry &seg = segmentList[segmentNum];
-
-		// Move to the start of the segment and read in it's details
-		fExe.seek(seg.headerOffset);
-		uint segmentParagraphs = fExe.readWord();
-		uint headerParagraphs = fExe.readWord();
-		fExe.readWord();
-		uint16 relocationStart = fExe.readWord();
-		seg.numRelocations = fExe.readWord();
-
-		// Set the code file offset and size for the segment
-		seg.codeOffset = seg.headerOffset + headerParagraphs * 16;
-		seg.codeSize = (segmentParagraphs - headerParagraphs) * 16;
-		assert((seg.codeSize % 16) == 0);
-
-		// Get the list of relocations
-		assert(relocationStart == 0);
-		fExe.seek(6 + relocationStart * 4, SEEK_CUR);
-
-		for (int relCtr = 0; relCtr < seg.numRelocations; ++relCtr) {
-			uint offsetVal = fExe.readWord();
-			uint segmentVal = fExe.readWord();
-			assert((segmentVal * 16 + offsetVal) < seg.codeSize);
-
-			++extraRelocations;
-			RelocationEntry relEntry(segmentVal, offsetVal);
-			relEntry._segmentIndex = segmentNum;
-			seg.relocations.push_back(relEntry);
-		}
-
-		// Sort the list of relocations into relative order
-		seg.relocations.sort();
-	}
-
-	// Sort the list so that any segments in the Ovl come first. This helps ensure the data
-	// segment segment in the executable will come list
-	segmentList.sort();
-
 	return true;
 }
 
@@ -853,7 +613,7 @@ void updateRelocationEntries() {
 
 void processExecutable() {
 	uint segs[0xffff];
-	for (uint i = 0; i < 0xffff; ++i) segs[i] = 0;
+	memset(segs, 0, sizeof(uint) * 0xffff);
 	for (uint idx = 0; idx < relocations.size(); ++idx) {
 		RelocationEntry &re = relocations[idx];
 		uint startSeg = re.getSegment();
