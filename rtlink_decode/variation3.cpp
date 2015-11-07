@@ -42,7 +42,7 @@ Common::Array<byte> v3Data;
 uint v3StartCS, v3StartIP;
 
 /**
- * Read in an encode value from the header
+ * Read in an encoded value from the header
  */
 uint decodeValue() {
 	byte buffer[4], v;
@@ -80,7 +80,7 @@ void process(uint selector, uint dataOffset) {
 	const uint bitMask = 0x1000;
 
 	for (int loopCtr = 0; loopCtr < numLoops; ++loopCtr) {		
-		// Lots of unknown code it certain bits are set. Part of it looks
+		// Lots of unknown code if certain bits are set. Part of it looks
 		// like code to handle code blocks bigger than 64Kb
 		uint v1 = fExe.readWord();
 		assert((v1 & 0xfff) == 0);
@@ -114,20 +114,22 @@ bool validateExecutableV3() {
 	v3StartCS = READ_LE_UINT16(&buffer[2]);
 	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
 	uint tableOffset = READ_LE_UINT16(&buffer[8]);
-	uint maxV1 = READ_LE_UINT16(&buffer[10]);
+	uint maxSegmentIndex = READ_LE_UINT16(&buffer[10]);
 	int numSegments = READ_LE_UINT16(&buffer[0x16]);
 	fExe.seek(fileOffset);
 
 	for (int segmentNum = 0; segmentNum < numSegments; ++segmentNum) {
-		uint relV1 = decodeValue();
-		assert((relV1 - 1) < maxV1);
+		uint segmentIndex = decodeValue();
+		assert((segmentIndex - 1) < maxSegmentIndex);
 
-		uint entryOffset = tableOffset + (relV1 - 1) * 4;
+		uint entryOffset = tableOffset + (segmentIndex - 1) * 4;
 		assert(entryOffset < 8192);
-		uint offset = READ_LE_UINT32(&buffer[entryOffset]);
+		uint segmentOffset = READ_LE_UINT32(&buffer[entryOffset]);
+		assert((segmentOffset & 0xffff) < 0x10);
 
 		uint segmentSize = decodeValue();
 		uint exeOffset = decodeValue();
+
 		// rtlinkst had loop here to figure out header size
 		const int config_headerSize = 0;
 		bool isPresent = decodeValue() != 0;
@@ -135,19 +137,20 @@ bool validateExecutableV3() {
 
 		// The data for the segment
 		uint oldSize = v3Data.size();
+		uint startingOffset = (segmentOffset >> 16) * 16 + (segmentOffset & 0xf);
 		if (segmentSize) {
-			v3Data.resize(oldSize + segmentSize);
+			// Ensure the data array is big enough to hold next segment
+			v3Data.resize(MAX(startingOffset + segmentSize, oldSize));
 
 			if (isPresent)
 				// Read in data from the stream
-				fExe.read(&v3Data[oldSize], segmentSize);
+				fExe.read(&v3Data[startingOffset], segmentSize);
 			else
-				Common::fill(&v3Data[oldSize], &v3Data[oldSize] + segmentSize, 0);
-
+				Common::fill(&v3Data[startingOffset], &v3Data[startingOffset] + segmentSize, 0);
 		}
 
 		// Process the segment to handle any relocation entries
-		process(oldSize / 16, oldSize);
+		process(segmentOffset >> 16, startingOffset);
 	}
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
