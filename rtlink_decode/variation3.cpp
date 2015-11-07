@@ -38,6 +38,56 @@
 #undef printf
 #undef exit
 
+Common::Array<byte> v3Data;
+
+/**
+ * Read in an encode value from the header
+ */
+uint decodeValue() {
+	byte buffer[4], v;
+	buffer[0] = buffer[1] = buffer[2] = buffer[3] = 0;
+	v = fExe.readByte();
+
+	// If the high bit isn't set, it's a 7-bit value that can be returned
+	if (!(v & 0x80))
+		return v;
+
+	v &= 0x7f;
+	int numBytes = 1;
+	byte *pByte = &buffer[2];
+
+	if (v & 0x40) {
+		v &= 0x3f;
+		--pByte;
+		++numBytes;
+		
+		if (buffer[0] & 0x20) {
+			v &= 0x1f;
+			--pByte;
+			++numBytes;
+			assert(v & 0x10);
+		}
+	}
+
+	*pByte++ = v;
+	fExe.read(pByte, numBytes);
+	return MKTAG(buffer[0], buffer[1], buffer[2], buffer[3]);
+}
+
+void process(uint selector, uint dataOffset) {
+	int numLoops = decodeValue();
+	
+	// TODO: Proper content for process method()
+	for (int loopCtr = 0; loopCtr < numLoops; ++loopCtr) {
+		uint v1 = fExe.readWord();
+		if (v1 & 1) {
+			uint v28D = decodeValue();
+			uint v28F = decodeValue();
+			// Lots of unknown stuff
+		}
+	}
+}
+
 bool validateExecutableV3() {
 	int fileOffset = scanExecutable((const byte *)"RTL", 3);
 	if (fileOffset > 0x100) {
@@ -45,13 +95,49 @@ bool validateExecutableV3() {
 		return false;
 	}
 
-	// Load in the relocation list
-	fExe.seek(((fExe.pos() + 3 + 15) / 16) * 16);
-	uint relEntry;
-	while ((relEntry = fExe.readLong()) != 0)
-		relocations.push_back(RelocationEntry(relEntry));
+	// Read in header data
+	byte buffer[8192];
+	fExe.seek(0x20);
+	fExe.read(buffer, 8192);
+
+	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
+	uint tableOffset = READ_LE_UINT16(&buffer[8]);
+	uint maxV1 = READ_LE_UINT16(&buffer[10]);
+	int numSegments = READ_LE_UINT16(&buffer[0x16]);
+	fExe.seek(fileOffset);
+
+	for (int segmentNum = 0; segmentNum < numSegments; ++segmentNum) {
+		uint relV1 = decodeValue();
+		assert((relV1 - 1) < maxV1);
+
+		uint entryOffset = tableOffset + (relV1 - 1) * 4;
+		assert(entryOffset < 8192);
+		uint offset = READ_LE_UINT32(&buffer[entryOffset]);
+
+		uint segmentSize = decodeValue();
+		uint exeOffset = decodeValue();
+		// rtlinkst had loop here to figure out header size
+		const int config_headerSize = 0;
+		bool isPresent = decodeValue() != 0;
+		fExe.skip(config_headerSize);
+
+		// The data for the segment
+		uint oldSize = v3Data.size();
+		if (segmentSize) {
+			v3Data.resize(oldSize + segmentSize);
+
+			if (isPresent)
+				// Read in data from the stream
+				fExe.read(&v3Data[oldSize], segmentSize);
+			else
+				Common::fill(&v3Data[oldSize], &v3Data[oldSize] + segmentSize, 0);
+
+		}
+
+		// Process the segment to handle any relocation entries
+		process(oldSize / 16, oldSize);
+	}
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
-
 	return true;
 }
