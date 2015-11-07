@@ -76,14 +76,23 @@ uint decodeValue() {
 
 void process(uint selector, uint dataOffset) {
 	int numLoops = decodeValue();
-	
-	// TODO: Proper content for process method()
-	for (int loopCtr = 0; loopCtr < numLoops; ++loopCtr) {
+	const uint bitMask = 0x1000;
+
+	for (int loopCtr = 0; loopCtr < numLoops; ++loopCtr) {		
+		// Lots of unknown code it certain bits are set. Part of it looks
+		// like code to handle code blocks bigger than 64Kb
 		uint v1 = fExe.readWord();
-		if (v1 & 1) {
-			uint v28D = decodeValue();
-			uint v28F = decodeValue();
-			// Lots of unknown stuff
+		assert((v1 & 0xfff) == 0);
+
+		bool hasRelocations = (v1 & bitMask) != 0;
+		int numRelocations = hasRelocations ? decodeValue() : 1;
+
+		// Relocation offset loop
+		for (int relocCtr = 0; relocCtr < numRelocations; ++relocCtr) {
+			uint offset = decodeValue();
+
+			// Add an entry to the main relocation list
+			relocations.push_back(RelocationEntry(selector, offset));
 		}
 	}
 }
