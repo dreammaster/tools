@@ -296,5 +296,6 @@ extern bool validateExecutableV3();
 extern bool loadSegmentListV1();
 extern bool loadSegmentListV2();
 extern Common::Array<byte> v3Data;
+extern uint v3StartCS, v3StartIP;
 
 #endif

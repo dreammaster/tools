@@ -39,6 +39,7 @@
 #undef exit
 
 Common::Array<byte> v3Data;
+uint v3StartCS, v3StartIP;
 
 /**
  * Read in an encode value from the header
@@ -109,6 +110,8 @@ bool validateExecutableV3() {
 	fExe.seek(0x20);
 	fExe.read(buffer, 8192);
 
+	v3StartIP = READ_LE_UINT16(&buffer[0]);
+	v3StartCS = READ_LE_UINT16(&buffer[2]);
 	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
 	uint tableOffset = READ_LE_UINT16(&buffer[8]);
 	uint maxV1 = READ_LE_UINT16(&buffer[10]);

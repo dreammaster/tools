@@ -659,6 +659,12 @@ void processExecutable() {
 	header[4] = outputCodeOffset / 16;
 	// Make sure the file checksum is zero
 	header[9] = 0;
+	
+	if (rtlinkVersion == VERSION3) {
+		// Set the new entry point
+		header[10] = v3StartIP;
+		header[11] = v3StartCS;
+	}
 
 	for (int i = 0; i < relocOffset / 2; ++i) fOut.writeWord(header[i]);
 	delete header;
