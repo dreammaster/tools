@@ -325,6 +325,10 @@ bool validateExecutable() {
 bool loadJumpList() {
 	byte byteVal;
 	byte callByte;
+	jumpOffset = jumpSize = 0;
+
+	if (rtlinkVersion == VERSION3)
+		return true;
 
 	if (rtlinkVersion == VERSION1) {
 		// After the filename (which is used by an earlier segment list), there may be 
@@ -451,7 +455,7 @@ bool loadDataDetails() {
 
 		assert(lastSeg.isExecutable);
 		lastSeg.isDataSegment = true;
-	} else {
+	} else if (rtlinkVersion == VERSION2) {
 		// Version 2 RTLINK executables have the data segment at end of the
 		// static part of the executable, before all the RTLink segments
 		const char *MS_RUNTIME = "MS Run-Time";
@@ -532,6 +536,11 @@ void updateRelocationEntries() {
 	}
 
 	originalRelocationCount = relocations.size();
+	extraRelocations = 0;
+	if (rtlinkVersion == VERSION3) {
+		outputCodeOffset = (((relocOffset + originalRelocationCount * 4) + 511) / 512) * 512;
+		return;
+	}
 
 	// For the data segment, we need to do a bit of pre-processing on the relocation 
 	// entries.. some of the selectors pointed to are for segments outside the data 
@@ -583,7 +592,6 @@ void updateRelocationEntries() {
 			relocations[relocations.size() - 1].addSegment(baseSegment);
 		}
 	}
-	extraRelocations = 0;
 
 	// Process the original set of relocation entries. Any relocation entries
 	// that were pointing into rtlink segments in the executable (i.e. data
@@ -636,8 +644,13 @@ void processExecutable() {
 	for (int i = 0; i < relocOffset / 2; ++i) header[i] = fExe.readWord();
 
 	// Set the filesize, taking into account extra space needed for extra relocation entries
-	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
-	uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
+	uint32 newSize;
+	if (rtlinkVersion == VERSION3) {
+		newSize = outputCodeOffset + v3Data.size();
+	} else {
+		SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
+		newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;	
+	}
 	header[1] = newSize % 512;
 	header[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
@@ -658,6 +671,13 @@ void processExecutable() {
 	// Write out 0 bytes until the code start position
 	int numBytes = outputCodeOffset - fOut.pos();
 	fOut.writeByte(0, numBytes);
+
+	if (rtlinkVersion == VERSION3) {
+		fOut.write(&v3Data[0], v3Data.size());
+		fOut.seek(0, SEEK_END);
+		printf("\nProcessing complete\n");
+		return;
+	}
 
 	// Copy bytes until the start of the jump alias table
 	fExe.seek(codeOffset);
@@ -827,7 +847,7 @@ int main(int argc, char *argv[]) {
 	if (rtlinkVersion == VERSION1) {
 		if (!loadSegmentListV1())
 			close();
-	} else {
+	} else if (rtlinkVersion == VERSION2) {
 		if (!loadSegmentListV2())
 			close();
 	}

@@ -295,5 +295,6 @@ extern int scanExecutable(const byte *data, int count);
 extern bool validateExecutableV3();
 extern bool loadSegmentListV1();
 extern bool loadSegmentListV2();
+extern Common::Array<byte> v3Data;
 
 #endif
