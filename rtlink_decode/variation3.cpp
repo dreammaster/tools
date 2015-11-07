@@ -76,10 +76,11 @@ uint decodeValue() {
 }
 
 void process(uint selector, uint dataOffset) {
-	int numLoops = decodeValue();
+	uint numLoops = decodeValue();
+	assert(numLoops <= 1);
 	const uint bitMask = 0x1000;
 
-	for (int loopCtr = 0; loopCtr < numLoops; ++loopCtr) {		
+	for (uint loopCtr = 0; loopCtr < numLoops; ++loopCtr) {
 		// Lots of unknown code if certain bits are set. Part of it looks
 		// like code to handle code blocks bigger than 64Kb
 		uint v1 = fExe.readWord();
