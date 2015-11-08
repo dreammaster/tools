@@ -42,6 +42,65 @@ Common::Array<byte> v3Data;
 uint v3StartCS, v3StartIP;
 
 /**
+ * We have a somewhat annoying job of converting the offsets that
+ * RTLink stores into proper segment/offset pairs to store in the
+ * produced executable's relocation table. It's important that the
+ * selectors are correct, and one overall loaded segment may actually
+ * consist of several smaller segments.
+ * Two types of values will be stored in the below selectors array:
+ * a negative value is used to denote the tentative range of base segment
+ * for the entire range of loaded segments. A positive selector will
+ * indicate a positive identification of segment bases.
+ */
+int selectors[0x10000];
+Common::Array<uint> relocationOffsets;
+
+void setSelector(int startSelector, uint offset, bool tentative) {
+	// Starting selector is definite
+	assert(selectors[startSelector] <= 0 || selectors[startSelector] == startSelector);
+	selectors[startSelector] = startSelector;
+
+	for (uint idx = startSelector + 1; idx <= (startSelector + offset / 16); ++idx) {
+		if (tentative && selectors[idx] > 0)
+			break;
+
+		assert(selectors[startSelector] <= 0 || selectors[startSelector] == startSelector);
+		selectors[idx] = tentative ? -startSelector : startSelector;
+	}
+}
+
+/**
+ * Creates relocation entries from the offsets
+ */
+void create_relocation_entries() {
+	// Sort the relocation list
+	Common::sort(relocationOffsets.begin(), relocationOffsets.end());
+
+	// First scan through the offsets to see if any of the relocation entries
+	// are part of far jumps or far calls. This could actually create some
+	// false positives.. relocation entries in data segments may just happen
+	// to follow these bytes. Or in instructions, like "mov ax, val", where
+	// the EA/9A opcode just happens to be in a prior opcode.
+	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
+		byte opcode = v3Data[relocationOffsets[idx] - 3];
+		if (opcode != 0x9A && opcode != 0xEA)
+			continue;
+
+		uint offset = READ_LE_UINT16(&v3Data[relocationOffsets[idx] - 2]);
+		uint segment = READ_LE_UINT16(&v3Data[relocationOffsets[idx]]);
+		setSelector(segment, offset, false);
+	}
+
+	// Write out the relocation list
+	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
+		uint offset = relocationOffsets[idx];
+		uint selector = ABS(selectors[offset / 16]);
+		assert((offset - selector * 16) <= 0xffff);
+		relocations.push_back(RelocationEntry(selector, offset - selector * 16));
+	}
+}
+
+/**
  * Read in an encoded value from the header
  */
 uint decodeValue() {
@@ -89,12 +148,10 @@ void process(uint selector, uint dataOffset) {
 		bool hasRelocations = (v1 & bitMask) != 0;
 		int numRelocations = hasRelocations ? decodeValue() : 1;
 
-		// Relocation offset loop
+		// Loop to record the offsets of relocation entries
 		for (int relocCtr = 0; relocCtr < numRelocations; ++relocCtr) {
 			uint offset = decodeValue();
-
-			// Add an entry to the main relocation list
-			relocations.push_back(RelocationEntry(selector, offset));
+			relocationOffsets.push_back(dataOffset + offset);
 		}
 	}
 }
@@ -105,6 +162,9 @@ bool validateExecutableV3() {
 		printf("Possible version 3, but file missing data\n");
 		return false;
 	}
+
+	// Initialize selectors list
+	Common::fill(&selectors[0], &selectors[0x10000], 0);
 
 	// Read in header data
 	byte buffer[8192];
@@ -137,11 +197,10 @@ bool validateExecutableV3() {
 		fExe.skip(config_headerSize);
 
 		// The data for the segment
-		uint oldSize = v3Data.size();
 		uint startingOffset = (segmentOffset >> 16) * 16 + (segmentOffset & 0xf);
 		if (segmentSize) {
 			// Ensure the data array is big enough to hold next segment
-			v3Data.resize(MAX(startingOffset + segmentSize, oldSize));
+			v3Data.resize(MAX(startingOffset + segmentSize, v3Data.size()));
 
 			if (isPresent)
 				// Read in data from the stream
@@ -150,9 +209,15 @@ bool validateExecutableV3() {
 				Common::fill(&v3Data[startingOffset], &v3Data[startingOffset] + segmentSize, 0);
 		}
 
+		// Mark the range of selectors for the data block
+		setSelector(segmentOffset >> 16, segmentSize, true);
+
 		// Process the segment to handle any relocation entries
 		process(segmentOffset >> 16, startingOffset);
 	}
+
+	// Handle converting the offset list to proper relocation entries
+	create_relocation_entries();
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;
