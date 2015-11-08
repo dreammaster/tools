@@ -41,31 +41,59 @@
 Common::Array<byte> v3Data;
 uint v3StartCS, v3StartIP;
 
+struct SelectorEntry {
+	uint _selector;
+	uint _referenceCount;
+	SelectorEntry() : _selector(0), _referenceCount(0) {}
+	SelectorEntry(uint selector) : _selector(selector), _referenceCount(1) {}
+};
+
+class SelectorArray : public Common::Array<SelectorEntry> {
+public:
+	void add(uint selector) {
+		for (uint idx = 0; idx < size(); ++idx) {
+			if ((*this)[idx]._selector == selector) {
+				(*this)[idx]._referenceCount++;
+				return;
+			}
+		}
+		push_back(SelectorEntry(selector));
+	}
+	uint selector() const {
+		assert(size() > 0);
+		uint maxIdx, maxVal = 0;
+		for (uint idx = 0; idx < size(); ++idx) {
+			if ((*this)[idx]._referenceCount > maxVal) {
+				maxVal = (*this)[idx]._referenceCount;
+				maxIdx = idx;
+			}
+		}
+
+		return (*this)[maxIdx]._selector;
+	}
+};
+
 /**
  * We have a somewhat annoying job of converting the offsets that
  * RTLink stores into proper segment/offset pairs to store in the
  * produced executable's relocation table. It's important that the
  * selectors are correct, and one overall loaded segment may actually
  * consist of several smaller segments.
- * Two types of values will be stored in the below selectors array:
- * a negative value is used to denote the tentative range of base segment
- * for the entire range of loaded segments. A positive selector will
- * indicate a positive identification of segment bases.
+ *
+ * Part of that is checking for relocation entries being part of far
+ * call or far jump instructions, and using the given segment and offset
+ * operands to also lock in segment ranges. However, since it's possible
+ * that what we think is a far call/jump instruction may not be (it may
+ * just be random data), that's why a ranking system is being used,
+ * where the base segment used for each paragraph is the one that was
+ * used most often during processing.
  */
-int selectors[0x10000];
+Common::Array<SelectorArray> selectors;
 Common::Array<uint> relocationOffsets;
 
-void setSelector(int startSelector, uint offset, bool tentative) {
-	// Starting selector is definite
-	assert(selectors[startSelector] <= 0 || selectors[startSelector] == startSelector);
-	selectors[startSelector] = startSelector;
-
-	for (uint idx = startSelector + 1; idx <= (startSelector + offset / 16); ++idx) {
-		if (tentative && selectors[idx] > 0)
-			break;
-
-		assert(selectors[startSelector] <= 0 || selectors[startSelector] == startSelector);
-		selectors[idx] = tentative ? -startSelector : startSelector;
+void setSelector(int startSelector, uint offset) {
+	for (uint idx = startSelector; idx <= (startSelector + offset / 16); ++idx) {
+		selectors[idx].add(startSelector);
 	}
 }
 
@@ -77,10 +105,8 @@ void create_relocation_entries() {
 	Common::sort(relocationOffsets.begin(), relocationOffsets.end());
 
 	// First scan through the offsets to see if any of the relocation entries
-	// are part of far jumps or far calls. This could actually create some
-	// false positives.. relocation entries in data segments may just happen
-	// to follow these bytes. Or in instructions, like "mov ax, val", where
-	// the EA/9A opcode just happens to be in a prior opcode.
+	// are part of far jumps or far calls, and if found, use the offsets in
+	// the segments pointed to as a range of memory that must be in that segment
 	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
 		byte opcode = v3Data[relocationOffsets[idx] - 3];
 		if (opcode != 0x9A && opcode != 0xEA)
@@ -88,15 +114,16 @@ void create_relocation_entries() {
 
 		uint offset = READ_LE_UINT16(&v3Data[relocationOffsets[idx] - 2]);
 		uint segment = READ_LE_UINT16(&v3Data[relocationOffsets[idx]]);
-		setSelector(segment, offset, false);
+		setSelector(segment, offset);
 	}
 
 	// Write out the relocation list
 	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
-		uint offset = relocationOffsets[idx];
-		uint selector = ABS(selectors[offset / 16]);
-		assert((offset - selector * 16) <= 0xffff);
-		relocations.push_back(RelocationEntry(selector, offset - selector * 16));
+		int offset = relocationOffsets[idx];
+		int selector = selectors[offset / 16].selector();
+		int offsetInSegment = offset - selector * 16;
+		assert(offsetInSegment >= 0 && offsetInSegment <= 0xffff);
+		relocations.push_back(RelocationEntry(selector, offsetInSegment));
 	}
 }
 
@@ -164,7 +191,7 @@ bool validateExecutableV3() {
 	}
 
 	// Initialize selectors list
-	Common::fill(&selectors[0], &selectors[0x10000], 0);
+	selectors.resize(0xffff);
 
 	// Read in header data
 	byte buffer[8192];
@@ -210,7 +237,7 @@ bool validateExecutableV3() {
 		}
 
 		// Mark the range of selectors for the data block
-		setSelector(segmentOffset >> 16, segmentSize, true);
+		setSelector(segmentOffset >> 16, segmentSize);
 
 		// Process the segment to handle any relocation entries
 		process(segmentOffset >> 16, startingOffset);
