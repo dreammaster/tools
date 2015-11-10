@@ -536,7 +536,6 @@ void updateRelocationEntries() {
 	}
 
 	originalRelocationCount = relocations.size();
-	extraRelocations = 0;
 	if (rtlinkVersion == VERSION3) {
 		outputCodeOffset = (((relocOffset + originalRelocationCount * 4) + 511) / 512) * 512;
 		return;
