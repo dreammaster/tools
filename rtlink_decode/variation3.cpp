@@ -161,6 +161,57 @@ uint decodeValue() {
 	return MKTAG(buffer[0], buffer[1], buffer[2], buffer[3]);
 }
 
+bool getArrayValue(int mode, int index, byte buffer[], uint *value, uint *bx) {
+	bool result = false;
+
+	switch (mode) {
+	case 0:
+		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[8]) + (index - 1) * 4);
+		*bx = 0;
+		break;
+
+	case 1:
+		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[12]) + (index - 1) * 4);
+		*bx = 0;
+		break;
+
+	case 3:
+		*value = *bx << 16;
+		*bx = 0;
+		break;
+
+	case 2:
+	case 4: {
+		uint tableOffset = (mode == 2) ? 0x10 : 0x4A;
+		byte *pSrc = &buffer[tableOffset + (*bx - 1) * 8];
+
+		if (*pSrc == 0x52) {
+			*value = READ_LE_UINT16(pSrc + 1) << 16;
+			*bx = READ_LE_UINT16(pSrc + 3);
+			result = true;
+		} else if (READ_LE_UINT16(pSrc + 1) == 0) {
+			byte *pSrc2 = buffer + READ_LE_UINT16(buffer + 8) +
+				((READ_LE_UINT16(pSrc + 3) - 1) * 4);
+			*value = READ_LE_UINT32(pSrc2);
+			*bx = READ_LE_UINT16(pSrc2 + 5);
+		} else {
+			uint value1 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 12) +
+				((READ_LE_UINT16(pSrc + 1) - 1) * 4));
+			uint value2 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 8) +
+				((READ_LE_UINT16(pSrc + 3) - 1) * 4));
+			value2 += pSrc[5];
+			*value = value1 - value2;
+		}
+		break;
+	}
+
+	default:
+		assert(0);
+	}
+
+	return result;
+}
+
 void process(uint selector, uint dataOffset) {
 	uint numLoops = decodeValue();
 	assert(numLoops <= 1);
