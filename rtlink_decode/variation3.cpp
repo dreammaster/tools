@@ -183,28 +183,9 @@ void process(uint selector, uint dataOffset) {
 	}
 }
 
-bool validateExecutableV3() {
-	int fileOffset = scanExecutable((const byte *)"RTL", 3);
-	if (fileOffset > 0x100) {
-		printf("Possible version 3, but file missing data\n");
-		return false;
-	}
-
-	// Initialize selectors list
-	selectors.resize(0xffff);
-
-	// Read in header data
-	byte buffer[8192];
-	fExe.seek(0x20);
-	fExe.read(buffer, 8192);
-
-	v3StartIP = READ_LE_UINT16(&buffer[0]);
-	v3StartCS = READ_LE_UINT16(&buffer[2]);
-	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
+void loadSegments(byte buffer[], int numSegments) {
 	uint tableOffset = READ_LE_UINT16(&buffer[8]);
 	uint maxSegmentIndex = READ_LE_UINT16(&buffer[10]);
-	int numSegments = READ_LE_UINT16(&buffer[0x16]);
-	fExe.seek(fileOffset);
 
 	for (int segmentNum = 0; segmentNum < numSegments; ++segmentNum) {
 		uint segmentIndex = decodeValue();
@@ -242,9 +223,73 @@ bool validateExecutableV3() {
 		// Process the segment to handle any relocation entries
 		process(segmentOffset >> 16, startingOffset);
 	}
+}
+
+void handleExternalSegment(byte buffer[], int extraIndex, uint rtlSegmentId, const char *filename) {
+	// Switch to the specified file
+	fExe.close();
+	fExe.open(filename);
+
+	uint headerId = fExe.readWord();
+	assert(headerId == 0x37BA);
+	uint rtlType = fExe.readByte();
+	assert((extraIndex == 0 && rtlType == 83) || (extraIndex == 1 && rtlType == 85));
+	uint rtlId = fExe.readByte();
+	assert(rtlId == rtlSegmentId);
+	fExe.readWord();
+	uint numSegments = fExe.readWord();
+	uint v8 = fExe.readWord();
+
+	uint fileOffset = 32;
+	if (v8 >= 300) {
+		fExe.seek(16);
+		fileOffset = fExe.readWord() * 16;
+	}
+
+	fExe.seek(fileOffset);
+	loadSegments(buffer, numSegments);
+}
+
+bool validateExecutableV3() {
+	int fileOffset = scanExecutable((const byte *)"RTL", 3);
+	if (fileOffset > 0x100) {
+		printf("Possible version 3, but file missing data\n");
+		return false;
+	}
+
+	// Initialize selectors list
+	selectors.resize(0xffff);
+
+	// Read in header data
+	byte buffer[8192];
+	fExe.seek(0x20);
+	fExe.read(buffer, 8192);
+
+	v3StartIP = READ_LE_UINT16(&buffer[0]);
+	v3StartCS = READ_LE_UINT16(&buffer[2]);
+	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
+	int numSegments = READ_LE_UINT16(&buffer[0x16]);
+
+	fExe.seek(fileOffset);
+	loadSegments(buffer, numSegments);
+
+	// Handle any extra segments
+	for (uint idx = 0; idx < 2; ++idx) {
+		if (!buffer[28 + idx * 2])
+			continue;
+
+		char filename[16];
+		strcpy(filename, (const char *)&buffer[29 + idx * 12]);
+		strcat(filename, ".RTL");
+
+		handleExternalSegment(buffer, idx, buffer[28 + idx * 2], filename);
+	}
 
 	// Handle converting the offset list to proper relocation entries
 	create_relocation_entries();
+
+	// Re-open the main executable
+	fExe.open(exeFilename);
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;
