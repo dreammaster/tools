@@ -39,7 +39,8 @@
 #undef exit
 
 Common::Array<byte> v3Data;
-uint v3StartCS, v3StartIP;
+uint v3StartCS = 0, v3StartIP = 0;
+uint extraHeaderSize = 0;
 
 struct SelectorEntry {
 	uint _selector;
@@ -90,6 +91,81 @@ public:
  */
 Common::Array<SelectorArray> selectors;
 Common::Array<uint> relocationOffsets;
+
+#define RTLINK_VERSION 502
+struct RTLinkReaderParams {
+	uint value1;
+	uint value2;
+	uint value20;
+	uint adjustMask, adjustShift;
+	uint mode1Mask, mode2Mask;
+	uint mode1Shift, mode2Shift;
+	uint hasRelocationsMask;
+	uint newBitData;
+	uint v271;
+
+	uint getShift(uint v) {
+		uint shift = 0;
+		while (!(v & 1)) {
+			++shift;
+			v >>= 1;
+		}
+
+		return shift;
+	}
+
+	void init(int version) {
+		value1 = 1;
+		value2 = 2;
+		value20 = 0x20;
+		adjustMask = 0x1C;
+		newBitData = 0x2000;
+
+		if (version > 410) {
+			mode1Mask = 0xE00;
+			mode2Mask = 0x1C0;
+			hasRelocationsMask = 0x1000;
+			v271 = 0x4000;	
+		} else if (version > 310) {
+			mode1Mask = 0xE00;
+			mode2Mask = 0x1C0;
+			hasRelocationsMask = 0x1000;
+			v271 = 0;
+		} else {
+			mode1Mask = 0x300;
+			mode2Mask = 0xC0;
+			hasRelocationsMask = 0x400;
+		}
+
+		adjustShift = getShift(adjustMask);
+		mode1Shift = getShift(mode1Mask);
+		mode2Shift = getShift(mode2Mask);
+	}
+};
+RTLinkReaderParams params;
+
+struct RTLFileHeader {
+	uint headerId;
+	uint rtlType;
+	uint rtlId;
+	uint field4;
+	uint numSegments;
+	uint releaseNum;
+	uint offsetParagraph;
+
+	void load() {
+		headerId = fExe.readWord();
+		rtlType = fExe.readByte();
+		rtlId = fExe.readByte();
+		field4 = fExe.readWord();
+		numSegments = fExe.readWord();
+		fExe.skip(6);
+		offsetParagraph = fExe.readWord();
+	}
+};
+RTLFileHeader rtlHeader;
+
+/*---------------------------------------------------------------*/
 
 void setSelector(int startSelector, uint offset) {
 	for (uint idx = startSelector; idx <= (startSelector + offset / 16); ++idx) {
@@ -161,39 +237,39 @@ uint decodeValue() {
 	return MKTAG(buffer[0], buffer[1], buffer[2], buffer[3]);
 }
 
-bool getArrayValue(int mode, int index, byte buffer[], uint *value, uint *bx) {
+bool getArrayValue(int mode, byte buffer[], uint *value, uint *idx) {
 	bool result = false;
 
 	switch (mode) {
 	case 0:
-		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[8]) + (index - 1) * 4);
-		*bx = 0;
+		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[8]) + (*idx - 1) * 4);
+		*idx = 0;
 		break;
 
 	case 1:
-		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[12]) + (index - 1) * 4);
-		*bx = 0;
+		*value = READ_LE_UINT32(buffer + READ_LE_UINT16(&buffer[12]) + (*idx - 1) * 4);
+		*idx = 0;
 		break;
 
 	case 3:
-		*value = *bx << 16;
-		*bx = 0;
+		*value = *idx << 16;
+		*idx = 0;
 		break;
 
 	case 2:
 	case 4: {
 		uint tableOffset = (mode == 2) ? 0x10 : 0x4A;
-		byte *pSrc = &buffer[tableOffset + (*bx - 1) * 8];
+		byte *pSrc = &buffer[tableOffset + (*idx - 1) * 8];
 
 		if (*pSrc == 0x52) {
 			*value = READ_LE_UINT16(pSrc + 1) << 16;
-			*bx = READ_LE_UINT16(pSrc + 3);
+			*idx = READ_LE_UINT16(pSrc + 3);
 			result = true;
 		} else if (READ_LE_UINT16(pSrc + 1) == 0) {
 			byte *pSrc2 = buffer + READ_LE_UINT16(buffer + 8) +
 				((READ_LE_UINT16(pSrc + 3) - 1) * 4);
 			*value = READ_LE_UINT32(pSrc2);
-			*bx = READ_LE_UINT16(pSrc2 + 5);
+			*idx = READ_LE_UINT16(pSrc2 + 5);
 		} else {
 			uint value1 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 12) +
 				((READ_LE_UINT16(pSrc + 1) - 1) * 4));
@@ -209,27 +285,120 @@ bool getArrayValue(int mode, int index, byte buffer[], uint *value, uint *bx) {
 		assert(0);
 	}
 
+	// Convert the segment/offset pair to just an offset
+	*value = (*value >> 16) * 16 + (*value & 0xffff);
+
+	// Return status flag
 	return result;
 }
 
-void process(uint selector, uint dataOffset) {
+void processSegmentRelocations(uint selector, uint dataOffset, byte buffer[]) {
 	uint numLoops = decodeValue();
 	assert(numLoops <= 1);
-	const uint bitMask = 0x1000;
+	uint arrayIndex1 = 0, arrayIndex2 = 0;
+	uint adjustMode = 0;
+	uint arrayValue1 = 0, arrayValue2 = 0;
+	uint arrChange = 0;
 
 	for (uint loopCtr = 0; loopCtr < numLoops; ++loopCtr) {
-		// Lots of unknown code if certain bits are set. Part of it looks
-		// like code to handle code blocks bigger than 64Kb
-		uint v1 = fExe.readWord();
-		assert((v1 & 0xfff) == 0);
+		uint bitData = fExe.readWord();
+		
+		if (bitData & params.value1) {
+			arrayIndex1 = decodeValue();
+			arrayIndex2 = decodeValue();
+			adjustMode = (bitData & params.adjustMask) >> params.adjustShift;
+			
+			getArrayValue((bitData & params.mode1Mask) >> params.mode1Shift,
+				buffer, &arrayValue1, &arrayIndex1);
+			bool flag = getArrayValue((bitData & params.mode2Mask) >> params.mode2Shift,
+				buffer, &arrayValue2, &arrayIndex2);
 
-		bool hasRelocations = (v1 & bitMask) != 0;
-		int numRelocations = hasRelocations ? decodeValue() : 1;
+			if (flag) {
+				arrayValue1 = arrayValue2;
+				bitData = params.newBitData;
+			}
+			arrayValue2 += arrayIndex2;
 
-		// Loop to record the offsets of relocation entries
-		for (int relocCtr = 0; relocCtr < numRelocations; ++relocCtr) {
-			uint offset = decodeValue();
-			relocationOffsets.push_back(dataOffset + offset);
+			if (bitData & params.value2) {
+				uint paragraphBase = arrayValue1 & 0xFFFFFFF0;
+				arrayValue2 -= paragraphBase;
+				arrayValue1 = paragraphBase / 16;
+			}
+		}
+
+		arrChange = 0;
+		uint innerLoopCount = ((bitData & params.value20) &&
+			(bitData & params.hasRelocationsMask)) ? decodeValue() : 1;
+		
+		for (uint loopCtr2 = 0; loopCtr2 < innerLoopCount; ++loopCtr2) {
+			uint hasRelocations;
+			if (bitData & params.value20) {
+				hasRelocations = decodeValue();
+				arrChange >>= 1;
+			} else {
+				hasRelocations = bitData & params.hasRelocationsMask;
+			}
+			uint numRelocations = hasRelocations ? decodeValue() : 1;
+
+			// Loop to record the offsets of relocation entries
+			for (uint relocCtr = 0; relocCtr < numRelocations; ++relocCtr) {
+				uint offset = decodeValue() - extraHeaderSize;
+
+				if (!(bitData & params.value1)) {
+					// It's a standard relocation entry
+					relocationOffsets.push_back(dataOffset + offset);
+				} else {
+					// It's not. Here's where shit gets serious
+					uint arrOffset = arrayValue2 + arrChange;
+					byte *pDest = &v3Data[dataOffset + offset];
+
+					if (bitData & params.value2) {
+						switch (adjustMode) {
+						case 0:
+							*pDest += arrOffset & 0xff;
+							break;
+						case 1:
+							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrOffset & 0xffff));
+							break;
+						case 4:
+							*pDest += (arrOffset >> 8) & 0xff;
+							break;
+						case 3:
+							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrOffset & 0xffff));
+							pDest += 2;
+							// Deliberate fall-through
+						case 2: {
+							if (bitData & params.v271) {
+								WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) << 12);
+							}
+
+							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrOffset & 0xffff));
+							uint mode1 = (bitData & params.mode1Mask) >> params.mode1Shift;
+							if (mode1 != 3 && !(bitData & params.newBitData)) {
+								relocationOffsets.push_back(dataOffset + offset);
+							}
+							break;
+						}
+
+						default:
+							assert(0);
+						}
+					} else {
+						assert(0);	// TODO
+						switch (adjustMode) {
+						case 0:
+							// TODO
+							break;
+						case 1:
+							// TODO
+							break;
+						default:
+							assert(0);
+							break;
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -249,11 +418,32 @@ void loadSegments(byte buffer[], int numSegments) {
 
 		uint segmentSize = decodeValue();
 		uint exeOffset = decodeValue();
+		
+		// Figure out extra needed header data
+		extraHeaderSize = 0;
+		uint arrOffset = READ_LE_UINT16(&buffer[0x38]);
+		for (uint idx = 0; idx < READ_LE_UINT16(&buffer[0x3A]); ++idx, arrOffset += 11) {
+			if (arrOffset == READ_LE_UINT16(&buffer[arrOffset])) {
+				arrOffset += 2;
+				if (rtlHeader.rtlType != 69) {
+					arrOffset += 3;
+					if (rtlHeader.rtlType != 85) {
+						arrOffset += 3;
+						assert(rtlHeader.rtlType == 83);
+					}
+				}
 
-		// rtlinkst had loop here to figure out header size
-		const int config_headerSize = 0;
+				exeOffset = READ_LE_UINT16(&buffer[arrOffset]);
+				extraHeaderSize = READ_LE_UINT16(&buffer[arrOffset + 2]);
+				segmentSize -= extraHeaderSize;
+				break;
+			}
+		}
+
 		bool isPresent = decodeValue() != 0;
-		fExe.skip(config_headerSize);
+
+		// Skip over any extra header
+		fExe.skip(extraHeaderSize);
 
 		// The data for the segment
 		uint startingOffset = (segmentOffset >> 16) * 16 + (segmentOffset & 0xf);
@@ -272,7 +462,7 @@ void loadSegments(byte buffer[], int numSegments) {
 		setSelector(segmentOffset >> 16, segmentSize);
 
 		// Process the segment to handle any relocation entries
-		process(segmentOffset >> 16, startingOffset);
+		processSegmentRelocations(segmentOffset >> 16, startingOffset, buffer);
 	}
 }
 
@@ -280,25 +470,18 @@ void handleExternalSegment(byte buffer[], int extraIndex, uint rtlSegmentId, con
 	// Switch to the specified file
 	fExe.close();
 	fExe.open(filename);
+	rtlHeader.load();
 
-	uint headerId = fExe.readWord();
-	assert(headerId == 0x37BA);
-	uint rtlType = fExe.readByte();
-	assert((extraIndex == 0 && rtlType == 83) || (extraIndex == 1 && rtlType == 85));
-	uint rtlId = fExe.readByte();
-	assert(rtlId == rtlSegmentId);
-	fExe.readWord();
-	uint numSegments = fExe.readWord();
-	uint v8 = fExe.readWord();
+	assert(rtlHeader.headerId == 0x37BA);
+	assert((extraIndex == 0 && rtlHeader.rtlType == 83) ||
+		(extraIndex == 1 && rtlHeader.rtlType == 85));
+	assert(rtlHeader.rtlId == rtlSegmentId);
 
-	uint fileOffset = 32;
-	if (v8 >= 300) {
-		fExe.seek(16);
-		fileOffset = fExe.readWord() * 16;
-	}
+	uint fileOffset = (rtlHeader.releaseNum < 300) ? 32 :
+		rtlHeader.offsetParagraph * 16;
 
 	fExe.seek(fileOffset);
-	loadSegments(buffer, numSegments);
+	loadSegments(buffer, rtlHeader.numSegments);
 }
 
 bool validateExecutableV3() {
@@ -307,6 +490,9 @@ bool validateExecutableV3() {
 		printf("Possible version 3, but file missing data\n");
 		return false;
 	}
+
+	// Initialize params for RTLink reader
+	params.init(RTLINK_VERSION);
 
 	// Initialize selectors list
 	selectors.resize(0xffff);
