@@ -523,7 +523,7 @@ bool validateExecutableV3() {
 
 	// Handle any extra segments
 	for (uint idx = 0; idx < 2; ++idx) {
-		if (!buffer[28 + idx * 2])
+		if (!buffer[28 + idx * 12])
 			continue;
 
 		char filename[16];
