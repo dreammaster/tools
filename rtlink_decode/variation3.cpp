@@ -237,6 +237,10 @@ uint decodeValue() {
 	return MKTAG(buffer[0], buffer[1], buffer[2], buffer[3]);
 }
 
+uint segOfsToLongOffset(uint v) {
+	return (v >> 16) * 16 + (v & 0xffff);
+}
+
 bool getArrayValue(int mode, byte buffer[], uint *value, uint *idx) {
 	bool result = false;
 
@@ -259,9 +263,9 @@ bool getArrayValue(int mode, byte buffer[], uint *value, uint *idx) {
 	case 2:
 	case 4: {
 		uint tableOffset = (mode == 2) ? 0x10 : 0x4A;
-		byte *pSrc = &buffer[tableOffset + (*idx - 1) * 8];
+		byte *pSrc = &buffer[READ_LE_UINT16(&buffer[tableOffset]) + (*idx - 1) * 8];
 
-		if (*pSrc == 0x52) {
+		if (*pSrc != 0x52) {
 			*value = READ_LE_UINT16(pSrc + 1) << 16;
 			*idx = READ_LE_UINT16(pSrc + 3);
 			result = true;
@@ -269,14 +273,20 @@ bool getArrayValue(int mode, byte buffer[], uint *value, uint *idx) {
 			byte *pSrc2 = buffer + READ_LE_UINT16(buffer + 8) +
 				((READ_LE_UINT16(pSrc + 3) - 1) * 4);
 			*value = READ_LE_UINT32(pSrc2);
-			*idx = READ_LE_UINT16(pSrc2 + 5);
+			*idx = READ_LE_UINT16(pSrc + 5);
 		} else {
-			uint value1 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 12) +
-				((READ_LE_UINT16(pSrc + 1) - 1) * 4));
-			uint value2 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 8) +
-				((READ_LE_UINT16(pSrc + 3) - 1) * 4));
-			value2 += pSrc[5];
-			*value = value1 - value2;
+			uint vSrc1 = READ_LE_UINT16(pSrc + 1);
+			uint vSrc3 = READ_LE_UINT16(pSrc + 3);
+			uint vSrc5 = READ_LE_UINT16(pSrc + 5);
+
+			uint segOfs1 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 12) + (vSrc1 - 1) * 4);
+			uint value1 = segOfsToLongOffset(segOfs1);
+			uint segOfs2 = READ_LE_UINT32(buffer + READ_LE_UINT16(buffer + 8) + (vSrc3 - 1) * 4);
+			uint value2 = segOfsToLongOffset(segOfs2);
+			value2 += vSrc5;
+
+			*value = segOfs1;
+			*idx = value2 - value1;
 		}
 		break;
 	}
@@ -294,7 +304,6 @@ bool getArrayValue(int mode, byte buffer[], uint *value, uint *idx) {
 
 void processSegmentRelocations(uint selector, uint dataOffset, byte buffer[]) {
 	uint numLoops = decodeValue();
-	assert(numLoops <= 1);
 	uint arrayIndex1 = 0, arrayIndex2 = 0;
 	uint adjustMode = 0;
 	uint arrayValue1 = 0, arrayValue2 = 0;
