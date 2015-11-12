@@ -342,8 +342,9 @@ void processSegmentRelocations(uint selector, uint dataOffset, byte buffer[]) {
 		for (uint loopCtr2 = 0; loopCtr2 < innerLoopCount; ++loopCtr2) {
 			uint hasRelocations;
 			if (bitData & params.value20) {
-				hasRelocations = decodeValue();
-				arrChange >>= 1;
+				uint v = decodeValue();
+				arrChange = v >> 1;
+				hasRelocations = v & 1;
 			} else {
 				hasRelocations = bitData & params.hasRelocationsMask;
 			}
@@ -375,13 +376,14 @@ void processSegmentRelocations(uint selector, uint dataOffset, byte buffer[]) {
 						case 3:
 							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrOffset & 0xffff));
 							pDest += 2;
+							offset += 2;
 							// Deliberate fall-through
 						case 2: {
 							if (bitData & params.v271) {
 								WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) << 12);
 							}
 
-							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrOffset & 0xffff));
+							WRITE_LE_UINT16(pDest, READ_LE_UINT16(pDest) + (arrayValue1 & 0xffff));
 							uint mode1 = (bitData & params.mode1Mask) >> params.mode1Shift;
 							if (mode1 != 3 && !(bitData & params.newBitData)) {
 								relocationOffsets.push_back(dataOffset + offset);
