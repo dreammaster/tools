@@ -428,7 +428,7 @@ void loadSegments(byte buffer[], int numSegments) {
 		assert((segmentOffset & 0xffff) < 0x10);
 
 		uint segmentSize = decodeValue();
-		uint exeOffset = decodeValue();
+		uint exeSegmentOffset = decodeValue();
 		
 		// Figure out extra needed header data
 		extraHeaderSize = 0;
@@ -444,7 +444,7 @@ void loadSegments(byte buffer[], int numSegments) {
 					}
 				}
 
-				exeOffset = READ_LE_UINT16(&buffer[arrOffset]);
+				exeSegmentOffset = READ_LE_UINT16(&buffer[arrOffset]);
 				extraHeaderSize = READ_LE_UINT16(&buffer[arrOffset + 2]);
 				segmentSize -= extraHeaderSize;
 				break;
@@ -458,6 +458,8 @@ void loadSegments(byte buffer[], int numSegments) {
 
 		// The data for the segment
 		uint startingOffset = (segmentOffset >> 16) * 16 + (segmentOffset & 0xf);
+		startingOffset += exeSegmentOffset;
+		
 		if (segmentSize) {
 			// Ensure the data array is big enough to hold next segment
 			v3Data.resize(MAX(startingOffset + segmentSize, v3Data.size()));
@@ -470,7 +472,7 @@ void loadSegments(byte buffer[], int numSegments) {
 		}
 
 		// Mark the range of selectors for the data block
-		setSelector(segmentOffset >> 16, segmentSize);
+		setSelector(startingOffset / 16, segmentSize);
 
 		// Process the segment to handle any relocation entries
 		processSegmentRelocations(segmentOffset >> 16, startingOffset, buffer);
@@ -508,6 +510,14 @@ bool validateExecutableV3() {
 	// Initialize selectors list
 	selectors.resize(0xffff);
 
+	// Set up the v3Data with the contents of the starting executable.
+	fExe.seek(8);
+	uint headerParagraphs = fExe.readWord();
+	fExe.seek(headerParagraphs * 16);
+	uint codeSize = fExe.size() - fExe.pos();
+	v3Data.resize(366272); // codeSize);
+	fExe.read(&v3Data[0], codeSize);
+
 	// Read in header data
 	byte buffer[8192];
 	fExe.seek(0x20);
@@ -538,6 +548,18 @@ bool validateExecutableV3() {
 
 	// Re-open the main executable
 	fExe.open(exeFilename);
+
+	//****DEBUG****
+
+	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
+		byte *b = &v3Data[relocationOffsets[idx]];
+		WRITE_LE_UINT16(b, READ_LE_UINT16(b) + 0x138);
+	}
+	File fBin;
+	fBin.open("d:\\temp\\gate_2.bin", kFileWriteMode);
+	fBin.write(&v3Data[0], v3Data.size());
+	fBin.close();
+
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;
