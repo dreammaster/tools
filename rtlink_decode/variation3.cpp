@@ -511,11 +511,14 @@ bool validateExecutableV3() {
 	selectors.resize(0xffff);
 
 	// Set up the v3Data with the contents of the starting executable.
+	// This, along with following code, may not be needed for the final
+	// decoded executable, I'm not sure. But it makes comparing against
+	// a raw dump taken in DosBox easier
 	fExe.seek(8);
 	uint headerParagraphs = fExe.readWord();
 	fExe.seek(headerParagraphs * 16);
 	uint codeSize = fExe.size() - fExe.pos();
-	v3Data.resize(366272); // codeSize);
+	v3Data.resize(codeSize);
 	fExe.read(&v3Data[0], codeSize);
 
 	// Read in header data
@@ -526,12 +529,24 @@ bool validateExecutableV3() {
 	v3StartIP = READ_LE_UINT16(&buffer[0]);
 	v3StartCS = READ_LE_UINT16(&buffer[2]);
 	fileOffset = READ_LE_UINT16(&buffer[0x14]) + 32;
+	uint movedCodeSize = READ_LE_UINT32(&buffer[0x18]);
 	int numSegments = READ_LE_UINT16(&buffer[0x16]);
 
+	// Simulate the code that moves the bulk of the EXE higher in memory
+	fExe.seek(14);
+	uint ssSeg = fExe.readWord();
+	uint movedCodeOffset = ssSeg * 16 - movedCodeSize;
+	
+	v3Data.resize(MAX(v3Data.size(), movedCodeOffset + movedCodeSize));
+	fExe.seek(fileOffset);
+	fExe.read(&v3Data[movedCodeOffset], movedCodeSize);
+
+	// Piece together the initial segments that form up the low portion
+	// of memory for the executable
 	fExe.seek(fileOffset);
 	loadSegments(buffer, numSegments);
 
-	// Handle any extra segments
+	// Handle any extra segments in secondary RTL files
 	for (uint idx = 0; idx < 2; ++idx) {
 		if (!buffer[28 + idx * 12])
 			continue;
@@ -548,18 +563,6 @@ bool validateExecutableV3() {
 
 	// Re-open the main executable
 	fExe.open(exeFilename);
-
-	//****DEBUG****
-
-	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
-		byte *b = &v3Data[relocationOffsets[idx]];
-		WRITE_LE_UINT16(b, READ_LE_UINT16(b) + 0x138);
-	}
-	File fBin;
-	fBin.open("d:\\temp\\gate_2.bin", kFileWriteMode);
-	fBin.write(&v3Data[0], v3Data.size());
-	fBin.close();
-
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;
