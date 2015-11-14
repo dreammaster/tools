@@ -48,6 +48,7 @@ File fExe, fOvl, fOut;
 char exeFilename[MAX_FILENAME_SIZE];
 char ovlFilename[MAX_FILENAME_SIZE];
 char outputFilename[MAX_FILENAME_SIZE];
+uint16 exeHeader[128];
 uint32 codeOffset, exeNameOffset;
 uint32 rtlinkSegmentStart;
 uint16 rtlinkSegment;
@@ -280,6 +281,11 @@ bool validateExecutable() {
 	codeOffset = fExe.readWord() << 4;
 	fExe.seek(24);
 	relocOffset = fExe.readWord();
+	assert(relocOffset < 0x100 && (relocOffset % 2) == 0);
+
+	// Read in the entirety of the header data
+	fExe.seek(0);
+	for (int i = 0; i < relocOffset / 2; ++i) exeHeader[i] = fExe.readWord();
 
 	// Get the relocation list
 	fExe.seek(relocOffset);
@@ -639,34 +645,27 @@ void processExecutable() {
 		}
 	}
 
-	assert(relocOffset % 2 == 0);
-	uint16 *header = new uint16[relocOffset / 2];
-
-	// Read in the header data, process it, and write it out
-	fExe.seek(0);
-	for (int i = 0; i < relocOffset / 2; ++i) header[i] = fExe.readWord();
-
-	// Set the filesize, taking into account extra space needed for extra relocation entries
 	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
 	uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
-	
-	header[1] = newSize % 512;
-	header[2] = (newSize + 511) / 512;
+
+	// Make needed alterations to the EXE header
+	exeHeader[1] = newSize % 512;
+	exeHeader[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
-	header[3] = relocations.size();
+	exeHeader[3] = relocations.size();
 	// Set the page offset for the code start
-	header[4] = outputCodeOffset / 16;
+	exeHeader[4] = outputCodeOffset / 16;
 	// Make sure the file checksum is zero
-	header[9] = 0;
+	exeHeader[9] = 0;
 	
 	if (rtlinkVersion == VERSION3) {
 		// Set the new entry point
-		header[10] = v3StartIP;
-		header[11] = v3StartCS;
+		exeHeader[10] = v3StartIP;
+		exeHeader[11] = v3StartCS;
 	}
 
-	for (int i = 0; i < relocOffset / 2; ++i) fOut.writeWord(header[i]);
-	delete header;
+	// Write out the new EXE header
+	for (int i = 0; i < relocOffset / 2; ++i) fOut.writeWord(exeHeader[i]);
 
 	// Copy over the relocation list
 	for (uint i = 0; i < relocations.size(); ++i) {
