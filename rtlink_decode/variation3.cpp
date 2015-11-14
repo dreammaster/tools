@@ -515,8 +515,8 @@ bool validateExecutableV3() {
 	// Handle converting the offset list to proper relocation entries
 	create_relocation_entries();
 
-	// Re-open the main executable
-	fExe.open(exeFilename);
+	// Open the decoded data as if it's the source file
+	fExe.open(&v3Data[0], v3Data.size());
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;

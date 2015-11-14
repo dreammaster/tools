@@ -197,28 +197,68 @@ public:
 
 class File {
 private:
-	FILE *f;
+	FILE *_f;
+	const byte *_memPtr;
+	size_t _offset, _size;
 public:
+	File() : _f(nullptr), _memPtr(nullptr), _offset(0), _size(0) {}
+
 	bool open(const char *filename, AccessMode mode = kFileReadMode) {
-		f = fopen(filename, (mode == kFileReadMode) ? "rb" : "wb+");
-		return (f != NULL);
+		_memPtr = nullptr;
+		_f = fopen(filename, (mode == kFileReadMode) ? "rb" : "wb+");
+		return (_f != NULL);
 	}
+	bool open(const byte *data, uint size) {
+		close();
+		_memPtr = data;
+		_size = size;
+		return true;
+	}
+
 	void close() {
-		if (f)
-			fclose(f);
-		f = NULL;
+		if (_f)
+			fclose(_f);
+		_f = nullptr;
+		_memPtr = nullptr;
 	}
 	int seek(int32 offset, int whence = SEEK_SET) {
-		return fseek(f, offset, whence);
+		if (_f)
+			return fseek(_f, offset, whence);
+
+		switch (whence) {
+		case SEEK_SET:
+			_offset = offset;
+			break;
+		case SEEK_CUR:
+			_offset += offset;
+			break;
+		case SEEK_END:
+			_offset = _size + offset;
+			break;
+		default:
+			break;
+		}
+
+		return _offset;
 	}
 	void skip(int32 offset) {
-		fseek(f, offset, SEEK_CUR);
+		if (_f)
+			fseek(_f, offset, SEEK_CUR);
+		else
+			_offset += offset;
 	}
-	long read(void *buffer, int len) {
-		return fread(buffer, 1, len, f);
+	long read(void *buffer, size_t len) {
+		if (_f)
+			return fread(buffer, 1, len, _f);
+
+		uint bytesToRead = CLIP(len, (size_t)0, _size - _offset);
+		memcpy(buffer, &_memPtr[_offset], bytesToRead);
+		_offset += bytesToRead;
+		return bytesToRead;
 	}
-	void write(const void *buffer, int len) {
-		fwrite(buffer, 1, len, f);
+	void write(const void *buffer, size_t len) {
+		assert(_f);
+		fwrite(buffer, 1, len, _f);
 	}
 	byte readByte() {
 		byte v;
@@ -253,20 +293,31 @@ public:
 		write(&vTemp, sizeof(uint32));
 	}
 	uint32 pos() const {
-		return ftell(f);
+		if (_f)
+			return ftell(_f);
+		else
+			return _offset;
 	}
 	uint32 size() const {
-		if (f) {
+		if (_f) {
 			uint32 currentPos = pos();
-			fseek(f, 0, SEEK_END);
+			fseek(_f, 0, SEEK_END);
 			uint32 result = pos();
-			fseek(f, currentPos, SEEK_SET);
+			fseek(_f, currentPos, SEEK_SET);
 			return result;
+		} else if (_memPtr) {
+			return _size;
 		} else {
 			return 0;
 		}
 	}
-	bool eof() const { return feof(f) != 0; }
+	bool eof() const { 
+		if (_f)
+			return feof(_f) != 0;
+		else if (_memPtr)
+			return _offset >= _size;
+		return false;
+	}
 };
 
 #define MAX_FILENAME_SIZE 1024
