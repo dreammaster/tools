@@ -42,54 +42,28 @@ Common::Array<byte> v3Data;
 uint v3StartCS = 0, v3StartIP = 0;
 uint extraHeaderSize = 0;
 
-struct SelectorEntry {
-	uint _selector;
-	uint _referenceCount;
-	SelectorEntry() : _selector(0), _referenceCount(0) {}
-	SelectorEntry(uint selector) : _selector(selector), _referenceCount(1) {}
-};
-
-class SelectorArray : public Common::Array<SelectorEntry> {
+class SegmentBaseArray {
+private:
+	bool _segments[0x10000];
 public:
-	void add(uint selector) {
-		for (uint idx = 0; idx < size(); ++idx) {
-			if ((*this)[idx]._selector == selector) {
-				(*this)[idx]._referenceCount++;
-				return;
-			}
-		}
-		push_back(SelectorEntry(selector));
+	SegmentBaseArray() {
+		memset(&_segments[0], 0, 0x10000 * sizeof(bool));
 	}
-	uint selector() const {
-		assert(size() > 0);
-		uint maxIdx, maxVal = 0;
-		for (uint idx = 0; idx < size(); ++idx) {
-			if ((*this)[idx]._referenceCount > maxVal) {
-				maxVal = (*this)[idx]._referenceCount;
-				maxIdx = idx;
-			}
-		}
 
-		return (*this)[maxIdx]._selector;
+	void add(uint selector) {
+		_segments[selector] = true;
+	}
+
+	uint getSegment(uint offset) {
+		uint segVal = offset / 16;
+		while (segVal > 0 && !_segments[segVal])
+			--segVal;
+
+		return segVal;
 	}
 };
 
-/**
- * We have a somewhat annoying job of converting the offsets that
- * RTLink stores into proper segment/offset pairs to store in the
- * produced executable's relocation table. It's important that the
- * selectors are correct, and one overall loaded segment may actually
- * consist of several smaller segments.
- *
- * Part of that is checking for relocation entries being part of far
- * call or far jump instructions, and using the given segment and offset
- * operands to also lock in segment ranges. However, since it's possible
- * that what we think is a far call/jump instruction may not be (it may
- * just be random data), that's why a ranking system is being used,
- * where the base segment used for each paragraph is the one that was
- * used most often during processing.
- */
-Common::Array<SelectorArray> selectors;
+SegmentBaseArray segments;
 Common::Array<uint> relocationOffsets;
 
 #define RTLINK_VERSION 502
@@ -165,14 +139,6 @@ struct RTLFileHeader {
 };
 RTLFileHeader rtlHeader;
 
-/*---------------------------------------------------------------*/
-
-void setSelector(int startSelector, uint offset) {
-	for (uint idx = startSelector; idx <= (startSelector + offset / 16); ++idx) {
-		selectors[idx].add(startSelector);
-	}
-}
-
 /**
  * Creates relocation entries from the offsets
  */
@@ -180,23 +146,17 @@ void create_relocation_entries() {
 	// Sort the relocation list
 	Common::sort(relocationOffsets.begin(), relocationOffsets.end());
 
-	// First scan through the offsets to see if any of the relocation entries
-	// are part of far jumps or far calls, and if found, use the offsets in
-	// the segments pointed to as a range of memory that must be in that segment
+	// First scan through the offsets and use the segment values pointed
+	// at to set the bases of segments
 	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
-		byte opcode = v3Data[relocationOffsets[idx] - 3];
-		if (opcode != 0x9A && opcode != 0xEA)
-			continue;
-
-		uint offset = READ_LE_UINT16(&v3Data[relocationOffsets[idx] - 2]);
 		uint segment = READ_LE_UINT16(&v3Data[relocationOffsets[idx]]);
-		setSelector(segment, offset);
+		segments.add(segment);
 	}
 
 	// Write out the relocation list
 	for (uint idx = 0; idx < relocationOffsets.size(); ++idx) {
 		int offset = relocationOffsets[idx];
-		int selector = selectors[offset / 16].selector();
+		int selector = segments.getSegment(offset);
 		int offsetInSegment = offset - selector * 16;
 		assert(offsetInSegment >= 0 && offsetInSegment <= 0xffff);
 		relocations.push_back(RelocationEntry(selector, offsetInSegment));
@@ -471,9 +431,6 @@ void loadSegments(byte buffer[], int numSegments) {
 				Common::fill(&v3Data[startingOffset], &v3Data[startingOffset] + segmentSize, 0);
 		}
 
-		// Mark the range of selectors for the data block
-		setSelector(startingOffset / 16, segmentSize);
-
 		// Process the segment to handle any relocation entries
 		processSegmentRelocations(segmentOffset >> 16, startingOffset, buffer);
 	}
@@ -506,9 +463,6 @@ bool validateExecutableV3() {
 
 	// Initialize params for RTLink reader
 	params.init(RTLINK_VERSION);
-
-	// Initialize selectors list
-	selectors.resize(0xffff);
 
 	// Set up the v3Data with the contents of the starting executable.
 	// This, along with following code, may not be needed for the final
