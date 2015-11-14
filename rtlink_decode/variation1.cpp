@@ -43,7 +43,7 @@
  * we find an occurance of the program's own filename, which is used by the
  * segment list, and work backwards to load in all the segments.
  */
-bool loadSegmentListV1() {
+bool loadSegmentListV1V3() {
 	byte buffer[LARGE_BUFFER_SIZE];
 	int dataIndex = 0;
 
@@ -166,9 +166,10 @@ bool loadSegmentListV1() {
 	// list is located in
 	uint highestIndex = 0, highestOffset = 0;
 	for (uint idx = 0; idx < relocations.size(); ++idx) {
-		if (relocations[idx].fileOffset() > highestOffset) {
+		uint fileOffset = relocations[idx].fileOffset();
+		if (fileOffset < segmentsOffset && fileOffset > highestOffset) {
 			highestIndex = idx;
-			highestOffset = relocations[idx].fileOffset();
+			highestOffset = fileOffset;
 		}
 	}
 

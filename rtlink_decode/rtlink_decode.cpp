@@ -327,10 +327,7 @@ bool loadJumpList() {
 	byte callByte;
 	jumpOffset = jumpSize = 0;
 
-	if (rtlinkVersion == VERSION3)
-		return true;
-
-	if (rtlinkVersion == VERSION1) {
+	if (rtlinkVersion != VERSION2) {
 		// After the filename (which is used by an earlier segment list), there may be 
 		// another ASCII filename for an overlay file, and then after that the thunk list.
 		// So if we get any kind of low value, then something's screwed up
@@ -364,7 +361,7 @@ bool loadJumpList() {
 		uint32 fileOffset = fExe.pos() - 1;
 
 		// Skip over the ther operands for the thunk call that loads the dynamic segment
-		fExe.skip((rtlinkVersion == VERSION1) ? 2 : 4);
+		fExe.skip((rtlinkVersion == VERSION2) ? 4 : 2);
 
 		byte jmpByte = fExe.readByte();
 		if (jmpByte != 0xea)
@@ -417,7 +414,7 @@ bool loadJumpList() {
 		jumpList.push_back(rec);
 
 		// If the next byte is 0, scan forward to see if the list resumes
-		if (rtlinkVersion == VERSION1)
+		if (rtlinkVersion != VERSION2)
 			byteVal = fExe.readByte();
 		while (byteVal == 0)
 			byteVal = fExe.readByte();
@@ -455,26 +452,28 @@ bool loadDataDetails() {
 
 		assert(lastSeg.isExecutable);
 		lastSeg.isDataSegment = true;
-	} else if (rtlinkVersion == VERSION2) {
-		// Version 2 RTLINK executables have the data segment at end of the
-		// static part of the executable, before all the RTLink segments
-		const char *MS_RUNTIME = "MS Run-Time";
-		int fileOffset = scanExecutable((const byte *)MS_RUNTIME, strlen(MS_RUNTIME));
-		if (fileOffset == -1) {
-			printf("Could not locate data segment. Maybe not using MS Run-Time?\n");
-			return false;
-		}
-		fileOffset -= 8;
-
-		// Set up a new dummy segment in the segment list for the data segment
-		SegmentEntry seg;
-		seg.isExecutable = seg.isDataSegment = true;
-		seg.headerOffset = seg.codeOffset = fileOffset;
-		seg.codeSize = segmentList[0].headerOffset - fileOffset;
-		seg.loadSegment = (fileOffset - codeOffset) / 16;
-
-		segmentList.push_back(seg);
+		return true;
 	}
+
+	// Version 2 & 3 RTLINK executables have the data segment at end of the
+	// static part of the executable, before all the RTLink segments
+	assert(rtlinkVersion == VERSION2 || segmentExeCount == 0);
+	const char *MS_RUNTIME = "MS Run-Time";
+	int fileOffset = scanExecutable((const byte *)MS_RUNTIME, strlen(MS_RUNTIME));
+	if (fileOffset == -1) {
+		printf("Could not locate data segment. Maybe not using MS Run-Time?\n");
+		return false;
+	}
+	fileOffset -= 8;
+
+	// Set up a new dummy segment in the segment list for the data segment
+	segmentList.push_back(SegmentEntry());
+	SegmentEntry &seg = segmentList[segmentList.size() - 1];
+	seg.isExecutable = seg.isDataSegment = true;
+	seg.headerOffset = seg.codeOffset = fileOffset;
+	seg.codeSize = !segmentList[0].isExecutable ? fExe.size() - fileOffset :
+		segmentList[0].headerOffset - fileOffset;
+	seg.loadSegment = (fileOffset - codeOffset) / 16;
 
 	return true;
 }
@@ -513,9 +512,10 @@ Exe Offset    Segment Index    Segment Offset\n\
  */
 void updateRelocationEntries() {
 	// Firstly do an iteration of the original relocations, and delete any of them that
-	// fall within the segment list. This is because some of them may point to different
-	// points within the same area of memory allocated for loading them, so if we left
-	// them in place, we could end up with confusion about how big each segment is
+	// fall within the rtlink segment list. This is because some of them may point to 
+	// different points within the same area of memory allocated for loading them, 
+	// so if we left them in place, we could end up with confusion about how big
+	// each segment is
 	for (int idx = (int)relocations.size() - 1; idx >= 0; --idx) {
 		RelocationEntry &re = relocations[idx];
 		uint fileOffset = re.fileOffset();
@@ -523,8 +523,9 @@ void updateRelocationEntries() {
 			relocations.remove_at(idx);
 	}
 
-	// Add in relocation entries for the jumps into the dynamic segments
 	if (rtlinkVersion == VERSION2) {
+		// Version 2 uses far jumps in the method thunks to call code in loaded methods.
+		// Add in relocation entries for their segment operands
 		for (uint idx = 0; idx < jumpList.size(); ++idx) {
 			int relocIndex = relocations.indexOf(jumpList[idx].fileOffset + 3);
 			if (jumpList[idx].segmentIndex >= 0 && relocIndex != -1) {
@@ -535,31 +536,30 @@ void updateRelocationEntries() {
 		}
 	}
 
+	// Store a copy of the original number of relocation entries (with already removed entries)
 	originalRelocationCount = relocations.size();
-	if (rtlinkVersion == VERSION3) {
-		outputCodeOffset = (((relocOffset + originalRelocationCount * 4) + 511) / 512) * 512;
-		return;
-	}
 
-	// For the data segment, we need to do a bit of pre-processing on the relocation 
-	// entries.. some of the selectors pointed to are for segments outside the data 
-	// segment, and into the area of memory rtlink segments are loaded into. 
-	// As such, they can't really be mapped to a single specific segment in the decoded 
-	// data, and what's worse, can screw up segment sizes when the decoded exe is 
-	// disassembled. So scan for such entries and delete them now
-	SegmentEntry &dataSeg = segmentList.dataSegment();
-	for (int idx = (int)dataSeg.relocations.size() - 1; idx >= 0; --idx) {
-		RelocationEntry &re = dataSeg.relocations[idx];
-		
-		// Figure out the file position the relocation entry points to within the
-		// data segment, and read in the segment selector
-		uint fileOffset = dataSeg.codeOffset + re.relativeOffset();
-		fExe.seek(fileOffset);
-		uint selector = fExe.readWord();
+	if (rtlinkVersion != VERSION3) {
+		// For the data segment, we need to do a bit of pre-processing on the relocation 
+		// entries.. some of the selectors pointed to are for segments outside the data 
+		// segment, and into the area of memory rtlink segments are loaded into. 
+		// As such, they can't really be mapped to a single specific segment in the decoded 
+		// data, and what's worse, can screw up segment sizes when the decoded exe is 
+		// disassembled. So scan for such entries and delete them now
+		SegmentEntry &dataSeg = segmentList.dataSegment();
+		for (int idx = (int)dataSeg.relocations.size() - 1; idx >= 0; --idx) {
+			RelocationEntry &re = dataSeg.relocations[idx];
 
-		if (selector < dataSeg.loadSegment && selector >= segmentList[0].loadSegment) {
-			dataSeg.relocations.remove_at(idx);
-			--extraRelocations;
+			// Figure out the file position the relocation entry points to within the
+			// data segment, and read in the segment selector
+			uint fileOffset = dataSeg.codeOffset + re.relativeOffset();
+			fExe.seek(fileOffset);
+			uint selector = fExe.readWord();
+
+			if (selector < dataSeg.loadSegment && selector >= segmentList[0].loadSegment) {
+				dataSeg.relocations.remove_at(idx);
+				--extraRelocations;
+			}
 		}
 	}
 
@@ -570,11 +570,16 @@ void updateRelocationEntries() {
 	if (outputCodeOffset < codeOffset)
 		outputCodeOffset = codeOffset;
 
-	// Get the entry for where the first RTLink segment in the executable started
-	SegmentEntry &firstExeSeg = segmentList.firstExeSegment();
+	// Determine the starting point in the new EXE where the segments will be written to
+	uint outputOffset;
+	if (rtlinkVersion == VERSION3) {
+		outputOffset = outputCodeOffset + segmentList.dataSegment().codeOffset;
+	} else {
+		// Get the entry for where the first RTLink segment in the executable started
+		SegmentEntry &firstExeSeg = segmentList.firstExeSegment();
 
-	// Start figuring out where each segment will be written to
-	uint32 outputOffset = (outputCodeOffset - codeOffset) + firstExeSeg.headerOffset;
+		outputOffset = (outputCodeOffset - codeOffset) + firstExeSeg.headerOffset;
+	}
 
 	// Iterate through each of the rtlink segments
 	for (uint segmentNum = 0; segmentNum < segmentList.size(); ++segmentNum) {
@@ -593,9 +598,8 @@ void updateRelocationEntries() {
 	}
 
 	// Process the original set of relocation entries. Any relocation entries
-	// that were pointing into rtlink segments in the executable (i.e. data
-	// segment references) will need to be adjusted by the change in position 
-	// of the segments in the output file
+	// that were pointing into executable segments will need to be adjusted by 
+	// the change in position of the segments in the output file
 	for (uint idx = 0; idx < originalRelocationCount; ++idx) {
 		RelocationEntry &re = relocations[idx];
 		
@@ -605,7 +609,7 @@ void updateRelocationEntries() {
 			if (se.isExecutable && re.fileOffset() >= se.codeOffset
 					&& re.fileOffset() < (se.codeOffset + se.codeSize)) {
 				int oldSelectorDiff = re.getSegment() - se.loadSegment;
-				assert(oldSelectorDiff > 0);
+				assert(oldSelectorDiff >= 0);
 				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + oldSelectorDiff;
 
 				re = RelocationEntry(newSelector, re.getOffset());
@@ -643,13 +647,9 @@ void processExecutable() {
 	for (int i = 0; i < relocOffset / 2; ++i) header[i] = fExe.readWord();
 
 	// Set the filesize, taking into account extra space needed for extra relocation entries
-	uint32 newSize;
-	if (rtlinkVersion == VERSION3) {
-		newSize = outputCodeOffset + v3Data.size();
-	} else {
-		SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
-		newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;	
-	}
+	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
+	uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
+	
 	header[1] = newSize % 512;
 	header[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
@@ -676,13 +676,6 @@ void processExecutable() {
 	// Write out 0 bytes until the code start position
 	int numBytes = outputCodeOffset - fOut.pos();
 	fOut.writeByte(0, numBytes);
-
-	if (rtlinkVersion == VERSION3) {
-		fOut.write(&v3Data[0], v3Data.size());
-		fOut.seek(0, SEEK_END);
-		printf("\nProcessing complete\n");
-		return;
-	}
 
 	// Copy bytes until the start of the jump alias table
 	fExe.seek(codeOffset);
@@ -849,11 +842,11 @@ int main(int argc, char *argv[]) {
 	if (!validateExecutable())
 		close();
 
-	if (rtlinkVersion == VERSION1) {
-		if (!loadSegmentListV1())
-			close();
-	} else if (rtlinkVersion == VERSION2) {
+	if (rtlinkVersion == VERSION2) {
 		if (!loadSegmentListV2())
+			close();
+	} else {
+		if (!loadSegmentListV1V3())
 			close();
 	}
 

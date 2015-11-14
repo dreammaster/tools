@@ -517,6 +517,7 @@ bool validateExecutableV3() {
 
 	// Open the decoded data as if it's the source file
 	fExe.open(&v3Data[0], v3Data.size());
+	codeOffset = 0;
 
 	printf("Version 3 - rtlinkst.com usage detected.\n");
 	return true;
