@@ -324,6 +324,7 @@ public:
 #define BUFFER_SIZE 1024
 #define LARGE_BUFFER_SIZE 0x1000
 
+extern RTLinkVersion rtlinkVersion;
 extern File fExe, fOvl, fOut;
 extern char exeFilename[MAX_FILENAME_SIZE];
 extern char ovlFilename[MAX_FILENAME_SIZE];

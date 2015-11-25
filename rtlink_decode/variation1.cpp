@@ -47,9 +47,16 @@ bool loadSegmentListV1V3() {
 	byte buffer[LARGE_BUFFER_SIZE];
 	int dataIndex = 0;
 
+	segmentsOffset = segmentsSize = 0;
+
 	exeNameOffset = scanExecutable((const byte *)exeFilename, strlen(exeFilename));
 	if (exeNameOffset == -1) {
 		printf("Could not find the executable's own filename within the file\n");
+		if (rtlinkVersion == VERSION3) {
+			printf("This may mean the program has only the initially decoded segments.\n");
+			return true;
+		}
+
 		return false;
 	}
 

@@ -262,8 +262,8 @@ void checkCommandLine(int argc, char *argv[]) {
 /**
  * Validates that the specified file is an RTLink-encoded executable
  */
-const char *RTLinkStr = ".RTLink(R)/Plus";
-#define RTLINK_STR_SIZE 15
+const char *RTLinkStr = "RTLink";
+#define RTLINK_STR_SIZE 6
 
 bool validateExecutable() {
 	char mzBuffer[2];
@@ -295,10 +295,10 @@ bool validateExecutable() {
 	// Check for the RTLink string
 	int stringOffset = scanExecutable((const byte *)RTLinkStr, RTLINK_STR_SIZE);
 	if (stringOffset == -1) {
-		printf("RTLink(R)/Plus identifier not found in specified executable\n");
+		printf("RTLink identifier not found in specified executable\n");
 		return false;
 	}
-	printf("Found RTLink(R)/Plus identifier in executable\n");
+	printf("Found RTLink identifier in executable\n");
 
 	// Detect the version of RTLink in use
 	
@@ -332,6 +332,12 @@ bool loadJumpList() {
 	byte byteVal;
 	byte callByte;
 	jumpOffset = jumpSize = 0;
+
+	if (exeNameOffset == -1) {
+		// No exe name, so can't locate a jump list
+		assert(rtlinkVersion == VERSION3);
+		return true;
+	}
 
 	if (rtlinkVersion != VERSION2) {
 		// After the filename (which is used by an earlier segment list), there may be 
@@ -461,6 +467,10 @@ bool loadDataDetails() {
 		return true;
 	}
 
+	// Some V3 RTLink files don't have any runtime dynamic segments
+	if (rtlinkVersion == VERSION3 && segmentList.size() == 0)
+		return true;
+
 	// Version 2 & 3 RTLINK executables have the data segment at end of the
 	// static part of the executable, before all the RTLink segments
 	assert(rtlinkVersion == VERSION2 || segmentExeCount == 0);
@@ -579,6 +589,11 @@ void updateRelocationEntries() {
 	// Determine the starting point in the new EXE where the segments will be written to
 	uint outputOffset;
 	if (rtlinkVersion == VERSION3) {
+		if (segmentList.size() == 0) {
+			outputOffset = outputCodeOffset;
+			return;
+		}
+
 		outputOffset = outputCodeOffset + segmentList.dataSegment().codeOffset;
 	} else {
 		// Get the entry for where the first RTLink segment in the executable started
@@ -645,8 +660,14 @@ void processExecutable() {
 		}
 	}
 
-	SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
-	uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
+	uint32 newSize;
+	if (segmentList.size() == 0) {
+		assert(rtlinkVersion == VERSION3);
+		newSize = fExe.size();
+	} else {
+		SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
+		uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
+	}
 
 	// Make needed alterations to the EXE header
 	exeHeader[1] = newSize % 512;
@@ -675,6 +696,16 @@ void processExecutable() {
 	// Write out 0 bytes until the code start position
 	int numBytes = outputCodeOffset - fOut.pos();
 	fOut.writeByte(0, numBytes);
+
+	if (segmentList.size() == 0) {
+		// Simply write out the rest of the decoded file
+		assert(rtlinkVersion == VERSION3);
+		fExe.seek(codeOffset);
+		copyBytes(newSize - outputCodeOffset);
+
+		printf("\nProcessing complete\n");
+		return;
+	}
 
 	// Copy bytes until the start of the jump alias table
 	fExe.seek(codeOffset);
