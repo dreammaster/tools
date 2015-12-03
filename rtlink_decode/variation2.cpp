@@ -38,6 +38,37 @@
 #undef printf
 #undef exit
 
+/**
+ * Detects a version 2 executable. These are identifiable by the RTLink segment
+ * having a relocation on the first word of the segment, so we scan for any
+ * relocation with a 0 offset, and then look forward to see if recognisable
+ * segment numbers follow it at the correct offset
+ */
+bool validateExecutableV2() {
+	byte buffer[LARGE_BUFFER_SIZE];
+	int dataIndex = 0;
+	segmentsOffset = 0;
+
+	// Iterate through the relocations looking for one with a 0 offset
+	for (uint relIndex = 0; relIndex < relocations.size(); ++relIndex) {
+		if (relocations[relIndex].getOffset() != 0)
+			continue;
+
+		// Read in data from the segment
+		uint fileOffset = relocations[relIndex].fileOffset() + 48;
+		fExe.seek(fileOffset);
+		fExe.read(buffer, LARGE_BUFFER_SIZE);
+
+		// Check to see if the segment number values we'd expect for the first two
+		// segment entries are 2 and 3
+		uint num1 = READ_LE_UINT16(buffer + 14);
+		uint num2 = READ_LE_UINT16(buffer + 32 + 14);
+		if (num1 == 2 && num2 == 3)
+			return true;
+	}
+
+	return false;
+}
 
 /**
  * Loads the list of dynamic segments from version 2 executables. In version 2

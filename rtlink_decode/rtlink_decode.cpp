@@ -312,9 +312,8 @@ bool validateExecutable() {
 		return true;
 	}
 
-	// Version 2 has a longer string version of RTLink/Plus
-	const char *V2_STRING = "RTLink(R)/Plus run-time code.\r\n";
-	if (scanExecutable((const byte *)V2_STRING, strlen(V2_STRING)) != -1) {
+	// Check for Version 2
+	if (validateExecutableV2()) {
 		rtlinkVersion = VERSION2;
 		printf("Version 2 of RTLink detected\n");
 		return true;
