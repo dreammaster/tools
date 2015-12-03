@@ -780,7 +780,7 @@ void processExecutable() {
 				fOut.writeWord(newSelector);
 			} else if (selector >= dataSeg.loadSegment) {
 				int selectorDiff = selector - dataSeg.loadSegment;
-				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+				int newSelector = (dataSeg.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
 
 				fOut.seek(-2, SEEK_CUR);
 				fOut.writeWord(newSelector);
