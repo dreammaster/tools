@@ -729,7 +729,8 @@ void processExecutable() {
 		// In case there's any flotsam at the end of any previous jump table
 		// entry, write over null bytes to the output
 		uint bytesDiff = je.fileOffset - fExe.pos();
-		copyBytes(bytesDiff);
+		fExe.skip(bytesDiff);
+		fOut.writeByte(0x90, bytesDiff);
 
 		// Copy over the call to the rtlink load method
 		copyBytes((rtlinkVersion == VERSION2) ? 5 : 3);
