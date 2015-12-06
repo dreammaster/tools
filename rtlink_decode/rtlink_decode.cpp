@@ -872,12 +872,19 @@ int main(int argc, char *argv[]) {
 	if (!validateExecutable())
 		close();
 
-	if (rtlinkVersion == VERSION2) {
+	switch (rtlinkVersion) {
+	case VERSION1:
+		if (!loadSegmentListV1())
+			close();
+		break;
+	case VERSION2:
 		if (!loadSegmentListV2())
 			close();
-	} else {
+		break;
+	case VERSION3:
 		if (!loadSegmentListV1V3())
 			close();
+		break;
 	}
 
 	if (!loadJumpList())

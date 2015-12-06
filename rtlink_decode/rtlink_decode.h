@@ -183,7 +183,8 @@ public:
 	uint32 outputCodeOffset;
 
 	SegmentEntry() : offset(0), segmentIndex(0), filenameOffset(0), headerOffset(0),
-		codeOffset(0), codeSize(0), flags(0), isExecutable(false), isDataSegment(false) {}
+		codeOffset(0), codeSize(0), flags(0), isExecutable(false), isDataSegment(false),
+		numRelocations(0), outputCodeOffset(0) {}
 };
 
 class SegmentArray : public Common::Array<SegmentEntry> {
@@ -345,9 +346,10 @@ extern SegmentArray segmentList;
 
 extern int scanExecutable(const byte *data, int count);
 extern bool validateExecutableV3();
-extern bool loadSegmentListV1V3();
 extern bool validateExecutableV2();
+extern bool loadSegmentListV1();
 extern bool loadSegmentListV2();
+extern bool loadSegmentListV1V3();
 extern Common::Array<byte> v3Data;
 extern uint v3StartCS, v3StartIP;
 
