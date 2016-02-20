@@ -1,0 +1,4 @@
+*.sdf
+/visualc_net/.vs/
+/visualc_net/Debug
+/visualc_net/Release
