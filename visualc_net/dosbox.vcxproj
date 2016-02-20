@@ -45,8 +45,8 @@
     <OutDir>.\Debug\</OutDir>
     <IntDir>.\Debug\</IntDir>
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);C:\Users\dreammaster\Documents\Visual Studio 2015\Projects\dosbox-0.74\visualc_net\include;C:\Users\dreammaster\Documents\Visual Studio 2015\Projects\dosbox-0.74\visualc_net\include\SDL</IncludePath>
-    <LibraryPath>$(VC_LibraryPath_x86);$(WindowsSDK_LibraryPath_x86);$(NETFXKitsDir)Lib\um\x86;$(LibraryPath);C:\Users\dreammaster\Documents\Visual Studio 2015\Projects\dosbox-0.74\visualc_net\lib\x86</LibraryPath>
+    <IncludePath>$(IncludePath);$(SolutionDir)\include;$(SolutionDir)\include\SDL</IncludePath>
+    <LibraryPath>$(VC_LibraryPath_x86);$(WindowsSDK_LibraryPath_x86);$(NETFXKitsDir)Lib\um\x86;$(LibraryPath);$(SolutionDir)\lib\x86</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <OutDir>.\Release\</OutDir>
