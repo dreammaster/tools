@@ -20,25 +20,13 @@
 *
 */
 
-// HACK to allow building with the SDL backend on MinGW
-// see bug #1800764 "TOOLS: MinGW tools building broken"
-#ifdef main
-#undef main
-#endif // main
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include "rtlink_decode.h"
-#include "common/algorithm.h"
-#include "common/list.h"
-#include "common/ptr.h"
-#include "common/util.h"
 
-#undef printf
-#undef exit
-
-Common::Array<byte> v3Data;
+std::vector<byte> v3Data;
 uint v3StartCS = 0, v3StartIP = 0;
 uint extraHeaderSize = 0;
 
@@ -64,7 +52,7 @@ public:
 };
 
 SegmentBaseArray segments;
-Common::Array<uint> relocationOffsets;
+std::vector<uint> relocationOffsets;
 
 #define RTLINK_VERSION 502
 struct RTLinkReaderParams {
@@ -144,7 +132,7 @@ RTLFileHeader rtlHeader;
  */
 void create_relocation_entries() {
 	// Sort the relocation list
-	Common::sort(relocationOffsets.begin(), relocationOffsets.end());
+	std::sort(relocationOffsets.begin(), relocationOffsets.end());
 
 	// First scan through the offsets and use the segment values pointed
 	// at to set the bases of segments
@@ -422,13 +410,13 @@ void loadSegments(byte buffer[], int numSegments) {
 		
 		if (segmentSize) {
 			// Ensure the data array is big enough to hold next segment
-			v3Data.resize(MAX(startingOffset + segmentSize, v3Data.size()));
+			v3Data.resize(std::max<size_t>(startingOffset + segmentSize, v3Data.size()));
 
 			if (isPresent)
 				// Read in data from the stream
 				fExe.read(&v3Data[startingOffset], segmentSize);
 			else
-				Common::fill(&v3Data[startingOffset], &v3Data[startingOffset] + segmentSize, 0);
+				std::fill(&v3Data[startingOffset], &v3Data[startingOffset] + segmentSize, 0);
 		}
 
 		// Process the segment to handle any relocation entries
@@ -491,7 +479,7 @@ bool validateExecutableV3() {
 	uint ssSeg = fExe.readWord();
 	uint movedCodeOffset = ssSeg * 16 - movedCodeSize;
 	
-	v3Data.resize(MAX(v3Data.size(), movedCodeOffset + movedCodeSize));
+	v3Data.resize(std::max<size_t>(v3Data.size(), movedCodeOffset + movedCodeSize));
 	fExe.seek(fileOffset);
 	fExe.read(&v3Data[movedCodeOffset], movedCodeSize);
 
@@ -584,7 +572,7 @@ bool loadSegmentListV1V3() {
 	uint firstSegmentOffset = 0;
 	for (int segmentNum = READ_LE_UINT16(buffer + offset + 14);
 	READ_LE_UINT16(buffer + offset + 14) == segmentNum; --segmentNum, offset -= 18) {
-		segmentList.insert_at(0, SegmentEntry());
+		segmentList.insert(segmentList.begin(), SegmentEntry());
 		SegmentEntry &seg = segmentList[0];
 		byte *p = buffer + offset;
 

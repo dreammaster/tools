@@ -105,20 +105,49 @@ enum RTLinkVersion { VERSION1, VERSION2, VERSION3 };
 #ifndef __RTLINK_DECODE_H__
 #define __RTLINK_DECODE_H__
 
-#include <stdio.h>
-#include <stdlib.h>
-#include "common/scummsys.h"
-#include "common/endian.h"
-#include "common/array.h"
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
-#undef FILE
-#undef fopen
-#undef fread
-#undef fwrite
-#undef fseek
-#undef ftell
-#undef feof
-#undef fclose
+typedef unsigned char byte;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef int32_t int32;
+typedef unsigned int uint;
+
+// Little-endian accessors for the DOS executable data. This tool only ever
+// targets little-endian hosts, so FROM/TO_LE are identity conversions; the
+// READ/WRITE helpers stay byte-wise so they're safe on unaligned buffers.
+static inline uint16 FROM_LE_16(uint16 v) { return v; }
+static inline uint32 FROM_LE_32(uint32 v) { return v; }
+static inline uint16 TO_LE_16(uint16 v) { return v; }
+static inline uint32 TO_LE_32(uint32 v) { return v; }
+
+static inline uint16 READ_LE_UINT16(const void *ptr) {
+	const byte *b = (const byte *)ptr;
+	return (uint16)(b[0] | (b[1] << 8));
+}
+static inline uint32 READ_LE_UINT32(const void *ptr) {
+	const byte *b = (const byte *)ptr;
+	return (uint32)(b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32)b[3] << 24));
+}
+static inline void WRITE_LE_UINT16(void *ptr, uint16 value) {
+	byte *b = (byte *)ptr;
+	b[0] = (byte)(value & 0xff);
+	b[1] = (byte)((value >> 8) & 0xff);
+}
+static inline void WRITE_LE_UINT32(void *ptr, uint32 value) {
+	byte *b = (byte *)ptr;
+	b[0] = (byte)(value & 0xff);
+	b[1] = (byte)((value >> 8) & 0xff);
+	b[2] = (byte)((value >> 16) & 0xff);
+	b[3] = (byte)((value >> 24) & 0xff);
+}
+#define MKTAG(a0,a1,a2,a3) ((uint32)((a3) | ((a2) << 8) | ((a1) << 16) | ((uint32)(a0) << 24)))
 
 enum AccessMode {
 	kFileReadMode = 1,
@@ -154,7 +183,7 @@ struct RelocationEntry {
 	uint getSegment() const { return _value >> 16; }
 };
 
-class RelocationArray : public Common::Array<RelocationEntry> {
+class RelocationArray : public std::vector<RelocationEntry> {
 public:
 	int indexOf(uint fileOffset) const;
 
@@ -187,7 +216,7 @@ public:
 		numRelocations(0), outputCodeOffset(0) {}
 };
 
-class SegmentArray : public Common::Array<SegmentEntry> {
+class SegmentArray : public std::vector<SegmentEntry> {
 public:
 	SegmentEntry &firstExeSegment();
 
@@ -252,7 +281,7 @@ public:
 		if (_f)
 			return fread(buffer, 1, len, _f);
 
-		uint bytesToRead = CLIP(len, (size_t)0, _size - _offset);
+		uint bytesToRead = (uint)std::min(len, _size - _offset);
 		memcpy(buffer, &_memPtr[_offset], bytesToRead);
 		_offset += bytesToRead;
 		return bytesToRead;
@@ -340,7 +369,7 @@ extern uint originalRelocationCount;
 
 extern uint jumpOffset, segmentsOffset;
 extern uint jumpSize, segmentsSize;
-typedef Common::Array<JumpEntry> JumpEntryList;
+typedef std::vector<JumpEntry> JumpEntryList;
 extern JumpEntryList jumpList;
 extern SegmentArray segmentList;
 
@@ -350,7 +379,7 @@ extern bool validateExecutableV2();
 extern bool loadSegmentListV1();
 extern bool loadSegmentListV2();
 extern bool loadSegmentListV1V3();
-extern Common::Array<byte> v3Data;
+extern std::vector<byte> v3Data;
 extern uint v3StartCS, v3StartIP;
 
 #endif

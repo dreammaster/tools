@@ -20,23 +20,11 @@
 *
 */
 
-// HACK to allow building with the SDL backend on MinGW
-// see bug #1800764 "TOOLS: MinGW tools building broken"
-#ifdef main
-#undef main
-#endif // main
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include "rtlink_decode.h"
-#include "common/algorithm.h"
-#include "common/list.h"
-#include "common/ptr.h"
-#include "common/util.h"
-
-#undef printf
-#undef exit
 
 /**
  * Loads the list of dynamic segments from version 1 executables
@@ -67,7 +55,7 @@ bool loadSegmentListV1() {
 	// Find the earliest load segment
 	int loadSegment = 0xffff;
 	for (uint idx = 0; idx < segmentList.size(); ++idx)
-		loadSegment = MIN(loadSegment, (int)segmentList[idx].loadSegment);
+		loadSegment = std::min(loadSegment, (int)segmentList[idx].loadSegment);
 
 	int exeLoadSegment = segmentList[segmentList.size() - 1].loadSegment;
 	int segmentDiff = exeLoadSegment - loadSegment;
@@ -76,7 +64,7 @@ bool loadSegmentListV1() {
 		return true;
 
 	// Create a new dummy EXE segment for the extra data
-	segmentList.insert_at(segmentList.size() - 1, SegmentEntry());
+	segmentList.insert(segmentList.begin() + (segmentList.size() - 1), SegmentEntry());
 	SegmentEntry &newSeg = segmentList[segmentList.size() - 2];
 	SegmentEntry &exeSeg = segmentList[segmentList.size() - 1];
 

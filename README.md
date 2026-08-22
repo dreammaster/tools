@@ -5,7 +5,6 @@ RogueVM tools repository
 Is a tool written to process games using the RTLink/Plus overlay manager and produce
 a flat executable suitable for disassembling with tools such as IDA. It includes
 a Makefile, but I've only really tested compiling it with Visual Studio.
-The project requires an installation of ScummVM in order to use some of it's classes.
 
 The tool currently detects and handles two different versions of RTLink/Plus..
 one version that supports having an external overlay file containing segments,

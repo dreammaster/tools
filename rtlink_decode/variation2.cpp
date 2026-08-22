@@ -20,23 +20,10 @@
 *
 */
 
-// HACK to allow building with the SDL backend on MinGW
-// see bug #1800764 "TOOLS: MinGW tools building broken"
-#ifdef main
-#undef main
-#endif // main
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "rtlink_decode.h"
-#include "common/algorithm.h"
-#include "common/list.h"
-#include "common/ptr.h"
-#include "common/util.h"
-
-#undef printf
-#undef exit
 
 /**
  * Detects a version 2 executable. These are identifiable by the RTLink segment

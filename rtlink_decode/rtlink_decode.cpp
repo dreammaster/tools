@@ -20,23 +20,11 @@
 *
 */
 
-// HACK to allow building with the SDL backend on MinGW
-// see bug #1800764 "TOOLS: MinGW tools building broken"
-#ifdef main
-#undef main
-#endif // main
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include "rtlink_decode.h"
-#include "common/algorithm.h"
-#include "common/list.h"
-#include "common/ptr.h"
-#include "common/util.h"
-
-#undef printf
-#undef exit
 
 void error(char const *s, ...) {
 	printf(s);
@@ -117,11 +105,11 @@ static bool relocationSortHelper(const RelocationEntry &v1, const RelocationEntr
 }
 
 void RelocationArray::sort() {
-	Common::sort(begin(), end(), relocationSortHelper);
+	std::sort(begin(), end(), relocationSortHelper);
 }
 
 void RelocationArray::sortNew() {
-	Common::sort(&(*this)[originalRelocationCount], end(), relocationSortHelper);
+	std::sort(begin() + originalRelocationCount, end(), relocationSortHelper);
 }
 
 static bool segmentSortHelper(const SegmentEntry &v1, const SegmentEntry &v2) {
@@ -130,7 +118,7 @@ static bool segmentSortHelper(const SegmentEntry &v1, const SegmentEntry &v2) {
 }
 
 void SegmentArray::sort() {
-	Common::sort(begin(), end(), segmentSortHelper);
+	std::sort(begin(), end(), segmentSortHelper);
 }
 
 SegmentEntry &SegmentArray::firstExeSegment() {
@@ -535,7 +523,7 @@ void updateRelocationEntries() {
 		RelocationEntry &re = relocations[idx];
 		uint fileOffset = re.fileOffset();
 		if (re.fileOffset() >= segmentsOffset && re.fileOffset() < (segmentsOffset + segmentsSize))
-			relocations.remove_at(idx);
+			relocations.erase(relocations.begin() + idx);
 	}
 
 	if (rtlinkVersion == VERSION2) {
@@ -572,7 +560,7 @@ void updateRelocationEntries() {
 			uint selector = fExe.readWord();
 
 			if (selector < dataSeg.loadSegment && selector >= segmentList[0].loadSegment) {
-				dataSeg.relocations.remove_at(idx);
+				dataSeg.relocations.erase(dataSeg.relocations.begin() + idx);
 				--extraRelocations;
 			}
 		}
@@ -672,7 +660,7 @@ void processExecutable() {
 	exeHeader[1] = newSize % 512;
 	exeHeader[2] = (newSize + 511) / 512;
 	// Set the number of relocation entries
-	exeHeader[3] = relocations.size();
+	exeHeader[3] = (uint16)relocations.size();
 	// Set the page offset for the code start
 	exeHeader[4] = outputCodeOffset / 16;
 	// Make sure the file checksum is zero
