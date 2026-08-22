@@ -630,6 +630,13 @@ void updateRelocationEntries() {
 	assert(relocations.size() == totalRelocations);
 }
 
+// Marks a far call/jmp segment operand whose true target couldn't be
+// resolved to a single segment (see the polymorphic-slot handling in
+// processExecutable()), so it's visibly flagged rather than silently wrong.
+#define UNRESOLVED_SEGMENT_MARKER 0xffff
+
+std::vector<uint> unresolvedPolymorphicSites;
+
 void processExecutable() {
 	uint segs[0xffff];
 	memset(segs, 0, sizeof(uint) * 0xffff);
@@ -762,17 +769,88 @@ void processExecutable() {
 			if (rtlinkVersion == VERSION2) {
 				// No processing needed
 			} else if (selector >= se.loadSegment && selector < (se.loadSegment + se.codeSize / 16)) {
+				// Common case: a reference into this same segment
 				int selectorDiff = selector - se.loadSegment;
 				int newSelector = (se.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
 
 				fOut.seek(-2, SEEK_CUR);
 				fOut.writeWord(newSelector);
-			} else if (selector >= dataSeg.loadSegment) {
-				int selectorDiff = selector - dataSeg.loadSegment;
-				int newSelector = (dataSeg.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+			} else {
+				// A direct (non-thunked) far call/jmp can also target a sibling
+				// segment that's loaded as part of the same group. Search the
+				// other tracked segments for whichever ones' range contains the
+				// raw selector. Several segments can share the exact same nominal
+				// loadSegment when they're mutually-exclusive alternates for the
+				// same memory slot (only one ever resident at a time), which makes
+				// a match against their shared starting paragraph ambiguous.
+				std::vector<SegmentEntry *> candidates;
+				for (uint otherIdx = 0; otherIdx < segmentList.size(); ++otherIdx) {
+					SegmentEntry &other = segmentList[otherIdx];
+					if (other.isDataSegment || otherIdx == segmentNum)
+						continue;
+					if (selector >= other.loadSegment && selector < (other.loadSegment + other.codeSize / 16))
+						candidates.push_back(&other);
+				}
 
-				fOut.seek(-2, SEEK_CUR);
-				fOut.writeWord(newSelector);
+				SegmentEntry *match = candidates.size() == 1 ? candidates[0] : nullptr;
+
+				if (!match && candidates.size() > 1) {
+					// Ambiguous by address range alone. Since only one of these
+					// alternates is ever resident at a time, try to break the tie
+					// the same way a human would: check whether the call's own
+					// target offset lands on a real function prologue (push bp /
+					// mov bp, sp -- 55 8B EC) in exactly one candidate's code. Read
+					// from the source file rather than the output file, since a
+					// sibling segment with a higher index hasn't been written to
+					// the output yet.
+					fOut.seek(fileOffset - 2);
+					uint callOffset = fOut.readWord(); // the far call/jmp's own offset operand, just before the segment word
+					fOut.seek(fileOffset + 2); // restore the cursor to where the earlier readWord() of the segment left it
+
+					SegmentEntry *prologueMatch = nullptr;
+					bool prologueAmbiguous = false;
+					for (SegmentEntry *candidate : candidates) {
+						File &srcFile = candidate->isExecutable ? fExe : fOvl;
+						uint checkOffset = candidate->codeOffset + (selector - candidate->loadSegment) * 16 + callOffset;
+						if (checkOffset + 3 > candidate->codeOffset + candidate->codeSize)
+							continue;
+
+						byte prologue[3];
+						srcFile.seek(checkOffset);
+						srcFile.read(prologue, 3);
+						if (prologue[0] == 0x55 && prologue[1] == 0x8b && prologue[2] == 0xec) {
+							if (prologueMatch)
+								prologueAmbiguous = true;
+							prologueMatch = candidate;
+						}
+					}
+
+					if (prologueMatch && !prologueAmbiguous)
+						match = prologueMatch;
+				}
+
+				if (match) {
+					int selectorDiff = selector - match->loadSegment;
+					int newSelector = (match->outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+
+					fOut.seek(-2, SEEK_CUR);
+					fOut.writeWord(newSelector);
+				} else if (!candidates.empty()) {
+					// Still ambiguous even after the prologue check -- flag it
+					// rather than leave a silently-wrong segment value in place.
+					unresolvedPolymorphicSites.push_back(fileOffset);
+					fOut.seek(-2, SEEK_CUR);
+					fOut.writeWord(UNRESOLVED_SEGMENT_MARKER);
+				} else if (selector >= dataSeg.loadSegment) {
+					// Last resort: the data segment has no reliable upper bound
+					// (its true extent can run past what's on disk), so it's only
+					// checked once nothing else has matched.
+					int selectorDiff = selector - dataSeg.loadSegment;
+					int newSelector = (dataSeg.outputCodeOffset - outputCodeOffset) / 16 + selectorDiff;
+
+					fOut.seek(-2, SEEK_CUR);
+					fOut.writeWord(newSelector);
+				}
 			}
 		}
 
@@ -837,6 +915,15 @@ void processExecutable() {
 	}
 
 	fOut.seek(0, SEEK_END);
+
+	if (!unresolvedPolymorphicSites.empty()) {
+		printf("\n%u far call/jmp segment operand(s) target a memory slot with multiple\n"
+			"mutually-exclusive alternates and couldn't be resolved to a single one\n"
+			"(marked %04Xh in the output):\n", (uint)unresolvedPolymorphicSites.size(), UNRESOLVED_SEGMENT_MARKER);
+		for (uint offset : unresolvedPolymorphicSites)
+			printf("  file offset %xh\n", offset);
+	}
+
 	printf("\nProcessing complete\n");
 }
 
