@@ -785,12 +785,28 @@ void processExecutable() {
 				// same memory slot (only one ever resident at a time), which makes
 				// a match against their shared starting paragraph ambiguous.
 				std::vector<SegmentEntry *> candidates;
-				for (uint otherIdx = 0; otherIdx < segmentList.size(); ++otherIdx) {
-					SegmentEntry &other = segmentList[otherIdx];
-					if (other.isDataSegment || otherIdx == segmentNum)
-						continue;
-					if (selector >= other.loadSegment && selector < (other.loadSegment + other.codeSize / 16))
-						candidates.push_back(&other);
+
+				// A selector exactly one paragraph past this SAME segment's own
+				// end isn't a reference to any specific segment's start -- it's
+				// "whatever loads into the next memory slot", which depends on
+				// which alternate of a DIFFERENT slot's family is resident at
+				// runtime and isn't recoverable from static segment ranges at
+				// all. Range-matching against other segments here would only
+				// ever find members of THIS segment's own alternate family
+				// (their ranges happen to extend past this one's end too), none
+				// of which is the real target -- so don't even search; treat it
+				// as unresolved immediately rather than risk a coincidental
+				// prologue match confidently landing on the wrong segment.
+				bool isNextSlotBoundary = (selector == se.loadSegment + se.codeSize / 16);
+
+				if (!isNextSlotBoundary) {
+					for (uint otherIdx = 0; otherIdx < segmentList.size(); ++otherIdx) {
+						SegmentEntry &other = segmentList[otherIdx];
+						if (other.isDataSegment || otherIdx == segmentNum)
+							continue;
+						if (selector >= other.loadSegment && selector < (other.loadSegment + other.codeSize / 16))
+							candidates.push_back(&other);
+					}
 				}
 
 				SegmentEntry *match = candidates.size() == 1 ? candidates[0] : nullptr;
@@ -846,12 +862,13 @@ void processExecutable() {
 
 					fOut.seek(-2, SEEK_CUR);
 					fOut.writeWord(newSelector);
-				} else if (!candidates.empty()) {
-					// Still ambiguous even after the prologue check. This location
-					// is still a declared relocation entry -- whatever raw value
-					// sits here will have some loader's own base segment added to
-					// it regardless (that's what triggered a real "fixup overflow"
-					// in IDA when this used to write a 0xFFFF marker: any near-max
+				} else if (!candidates.empty() || isNextSlotBoundary) {
+					// Still ambiguous even after the prologue check (or a next-slot
+					// boundary reference, never even searched). This location is
+					// still a declared relocation entry -- whatever raw value sits
+					// here will have some loader's own base segment added to it
+					// regardless (that's what triggered a real "fixup overflow" in
+					// IDA when this used to write a 0xFFFF marker: any near-max
 					// value plus any nonzero base wraps past 16 bits, and IDA
 					// aborted applying every fixup after it). So the raw value is
 					// left exactly as read -- untouched, not re-written -- and only
