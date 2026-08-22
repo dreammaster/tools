@@ -796,38 +796,48 @@ void processExecutable() {
 				SegmentEntry *match = candidates.size() == 1 ? candidates[0] : nullptr;
 
 				if (!match && candidates.size() > 1) {
-					// Ambiguous by address range alone. Since only one of these
-					// alternates is ever resident at a time, try to break the tie
-					// the same way a human would: check whether the call's own
-					// target offset lands on a real function prologue (push bp /
-					// mov bp, sp -- 55 8B EC) in exactly one candidate's code. Read
-					// from the source file rather than the output file, since a
-					// sibling segment with a higher index hasn't been written to
-					// the output yet.
+					// Ambiguous by address range alone. The relocation mechanism
+					// covers any word needing a segment fixup, not just far call/jmp
+					// operands -- e.g. "mov reg, seg X" also goes through this same
+					// path, and has no accompanying target-offset field. Only try
+					// the prologue-based tie-break when this word is actually the
+					// segment operand of a far call (9Ah) or far jmp (EAh); anything
+					// else has no reliable "offset into the target" to check against.
+					fOut.seek(fileOffset - 3);
+					byte opcode = fOut.readByte();
 					fOut.seek(fileOffset - 2);
 					uint callOffset = fOut.readWord(); // the far call/jmp's own offset operand, just before the segment word
 					fOut.seek(fileOffset + 2); // restore the cursor to where the earlier readWord() of the segment left it
 
-					SegmentEntry *prologueMatch = nullptr;
-					bool prologueAmbiguous = false;
-					for (SegmentEntry *candidate : candidates) {
-						File &srcFile = candidate->isExecutable ? fExe : fOvl;
-						uint checkOffset = candidate->codeOffset + (selector - candidate->loadSegment) * 16 + callOffset;
-						if (checkOffset + 3 > candidate->codeOffset + candidate->codeSize)
-							continue;
+					if (opcode == 0x9a || opcode == 0xea) {
+						// Since only one of these alternates is ever resident at a
+						// time, try to break the tie the same way a human would:
+						// check whether the call's own target offset lands on a real
+						// function prologue (push bp / mov bp, sp -- 55 8B EC) in
+						// exactly one candidate's code. Read from the source file
+						// rather than the output file, since a sibling segment with
+						// a higher index hasn't been written to the output yet.
+						SegmentEntry *prologueMatch = nullptr;
+						bool prologueAmbiguous = false;
+						for (SegmentEntry *candidate : candidates) {
+							File &srcFile = candidate->isExecutable ? fExe : fOvl;
+							uint checkOffset = candidate->codeOffset + (selector - candidate->loadSegment) * 16 + callOffset;
+							if (checkOffset + 3 > candidate->codeOffset + candidate->codeSize)
+								continue;
 
-						byte prologue[3];
-						srcFile.seek(checkOffset);
-						srcFile.read(prologue, 3);
-						if (prologue[0] == 0x55 && prologue[1] == 0x8b && prologue[2] == 0xec) {
-							if (prologueMatch)
-								prologueAmbiguous = true;
-							prologueMatch = candidate;
+							byte prologue[3];
+							srcFile.seek(checkOffset);
+							srcFile.read(prologue, 3);
+							if (prologue[0] == 0x55 && prologue[1] == 0x8b && prologue[2] == 0xec) {
+								if (prologueMatch)
+									prologueAmbiguous = true;
+								prologueMatch = candidate;
+							}
 						}
-					}
 
-					if (prologueMatch && !prologueAmbiguous)
-						match = prologueMatch;
+						if (prologueMatch && !prologueAmbiguous)
+							match = prologueMatch;
+					}
 				}
 
 				if (match) {
