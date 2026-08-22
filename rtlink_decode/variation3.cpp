@@ -427,7 +427,11 @@ void loadSegments(byte buffer[], int numSegments) {
 void handleExternalSegment(byte buffer[], int extraIndex, uint rtlSegmentId, const char *filename) {
 	// Switch to the specified file
 	fExe.close();
-	fExe.open(filename);
+	if (!fExe.open(filename)) {
+		printf("Could not locate external overlay - %s", filename);
+		exit(1);
+	}
+
 	rtlHeader.load();
 
 	assert(rtlHeader.headerId == 0x37BA);

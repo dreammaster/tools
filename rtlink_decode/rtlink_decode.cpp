@@ -220,7 +220,7 @@ void copyBytes(int numBytes, File *f = &fExe) {
 
 void checkCommandLine(int argc, char *argv[]) {
 	if (argc == 1) {
-		printf("RTLink(R)/Plus Legend Entertainment executable decoder -- Version 1.0\n\n\
+		printf("RTLink(R)/Plus Legend Entertainment executable decoder -- Version 2.0\n\n\
 			   Usage: rtlink_decode Input.exe [Output.exe]\n");
 		exit(0);
 	}
@@ -653,7 +653,7 @@ void processExecutable() {
 		newSize = fExe.size();
 	} else {
 		SegmentEntry &lastSeg = segmentList[segmentList.size() - 1];
-		uint32 newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
+		newSize = lastSeg.outputCodeOffset + lastSeg.codeSize;
 	}
 
 	// Make needed alterations to the EXE header
