@@ -630,11 +630,12 @@ void updateRelocationEntries() {
 	assert(relocations.size() == totalRelocations);
 }
 
-// Marks a far call/jmp segment operand whose true target couldn't be
-// resolved to a single segment (see the polymorphic-slot handling in
-// processExecutable()), so it's visibly flagged rather than silently wrong.
-#define UNRESOLVED_SEGMENT_MARKER 0xffff
-
+// File offsets of far call/jmp segment operands whose true target is one of
+// several mutually-exclusive alternate segments and couldn't be narrowed to
+// a single one (see the polymorphic-slot handling in processExecutable()).
+// Left byte-for-byte untouched in the output -- these stay declared relocation
+// entries, so overwriting the raw value with any marker risks a real fixup
+// overflow once some loader's own base segment gets added to it.
 std::vector<uint> unresolvedPolymorphicSites;
 
 void processExecutable() {
@@ -836,11 +837,17 @@ void processExecutable() {
 					fOut.seek(-2, SEEK_CUR);
 					fOut.writeWord(newSelector);
 				} else if (!candidates.empty()) {
-					// Still ambiguous even after the prologue check -- flag it
-					// rather than leave a silently-wrong segment value in place.
+					// Still ambiguous even after the prologue check. This location
+					// is still a declared relocation entry -- whatever raw value
+					// sits here will have some loader's own base segment added to
+					// it regardless (that's what triggered a real "fixup overflow"
+					// in IDA when this used to write a 0xFFFF marker: any near-max
+					// value plus any nonzero base wraps past 16 bits, and IDA
+					// aborted applying every fixup after it). So the raw value is
+					// left exactly as read -- untouched, not re-written -- and only
+					// noted in the report below for out-of-band flagging (e.g. an
+					// IDA comment script), not by corrupting the word itself.
 					unresolvedPolymorphicSites.push_back(fileOffset);
-					fOut.seek(-2, SEEK_CUR);
-					fOut.writeWord(UNRESOLVED_SEGMENT_MARKER);
 				} else if (selector >= dataSeg.loadSegment) {
 					// Last resort: the data segment has no reliable upper bound
 					// (its true extent can run past what's on disk), so it's only
@@ -918,10 +925,19 @@ void processExecutable() {
 
 	if (!unresolvedPolymorphicSites.empty()) {
 		printf("\n%u far call/jmp segment operand(s) target a memory slot with multiple\n"
-			"mutually-exclusive alternates and couldn't be resolved to a single one\n"
-			"(marked %04Xh in the output):\n", (uint)unresolvedPolymorphicSites.size(), UNRESOLVED_SEGMENT_MARKER);
-		for (uint offset : unresolvedPolymorphicSites)
-			printf("  file offset %xh\n", offset);
+			"mutually-exclusive alternates and couldn't be resolved to a single one.\n"
+			"Left untouched in the output; file offsets written to %s.polymorphic.txt\n",
+			(uint)unresolvedPolymorphicSites.size(), outputFilename);
+
+		char reportFilename[MAX_FILENAME_SIZE + 20];
+		strcpy(reportFilename, outputFilename);
+		strcat(reportFilename, ".polymorphic.txt");
+		FILE *report = fopen(reportFilename, "w");
+		if (report) {
+			for (uint offset : unresolvedPolymorphicSites)
+				fprintf(report, "%xh\n", offset);
+			fclose(report);
+		}
 	}
 
 	printf("\nProcessing complete\n");
